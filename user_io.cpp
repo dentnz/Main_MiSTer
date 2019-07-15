@@ -1378,7 +1378,7 @@ int user_io_file_tx(const char* name, unsigned char index, char opensave, char m
 	spi_w(toupper(p[2]) << 8 | toupper(p[3]));
 	DisableFpga();
 
-	// prepare transmission of new file
+	// prepare FPGA for transmission of new file
 	EnableFpga();
 	spi8(UIO_FILE_TX);
 	spi8(0xff);
@@ -1442,7 +1442,7 @@ int user_io_file_tx(const char* name, unsigned char index, char opensave, char m
 		user_io_file_mount((char*)buf, 0, 1);
 	}
 
-	// signal end of transmission
+	// signal end of transmission to FPGA
 	EnableFpga();
 	spi8(UIO_FILE_TX);
 	spi8(0x00);
@@ -1454,6 +1454,8 @@ int user_io_file_tx(const char* name, unsigned char index, char opensave, char m
 		send_pcolchr(name, (index & 0x1F) | 0x20, 0);
 		send_pcolchr(name, (index & 0x1F) | 0x60, 1);
 	}
+
+
 	return 1;
 }
 
@@ -1765,7 +1767,7 @@ void user_io_poll()
 	{
 		x86_poll();
 	}
-	else if ((core_type == CORE_TYPE_8BIT || core_type == CORE_TYPE_ARCHIE) && !is_menu_core())
+	else if ((core_type == CORE_TYPE_8BIT || core_type == CORE_TYPE_ARCHIE || is_snes_core()) && !is_menu_core())
 	{
 		static uint8_t buffer[4][512];
 		uint32_t lba;
@@ -1996,6 +1998,7 @@ void user_io_poll()
 
 	if (core_type == CORE_TYPE_ARCHIE) archie_poll();
 	if (core_type == CORE_TYPE_SHARPMZ) sharpmz_poll();
+	if (is_snes_core()) snes_poll();
 
 	static uint8_t leds = 0;
 	if(use_ps2ctl && core_type != CORE_TYPE_MINIMIG2)

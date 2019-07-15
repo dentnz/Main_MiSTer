@@ -3,10 +3,30 @@
 #include <stdlib.h>
 #include <string.h>
 #include <inttypes.h>
+#include <sys/types.h>
+#include <unistd.h>
+#include <sys/wait.h>
 
 #include "../../file_io.h"
+#include "../../user_io.h"
 
 static uint8_t hdr[512];
+char snes_msu_currenttrack(0x00);
+
+void run_process(const char* path, const char* file) {
+    pid_t child_pid;
+
+    /* Duplicate this process.  */
+    child_pid = fork();
+
+    if (child_pid == 0) {
+		// this is in the child
+        execl(path, path, "-f", "cd", file, NULL);
+        /* The execvp function returns only if an error occurs.  */
+        printf("an error occurred in execl\n");
+        abort();
+    }
+}
 
 enum HeaderField {
 	CartName = 0x00,
@@ -258,4 +278,43 @@ uint8_t* snes_get_header(fileTYPE *f)
 		free(prebuf);
 	}
 	return hdr;
+}
+
+char snes_read_msu_trackout(void)
+{
+	char msu_trackout;
+
+	// Tell FPGA to send me msu_trackout
+	spi_uio_cmd_cont(0x50);
+	// will be returned back on spi_in
+	msu_trackout = spi_in();
+	// finish up
+	DisableIO();
+
+    return(msu_trackout);
+}
+
+void snes_poll(void)
+{
+	char msu_trackout;
+
+	msu_trackout = snes_read_msu_trackout();
+	if (msu_trackout != snes_msu_currenttrack) {
+		printf("SNES MSU - new track 0x%X selected\n", msu_trackout);
+		snes_msu_currenttrack = msu_trackout;
+
+		// Tell FPGA we are mounting the file
+		spi_uio_cmd_cont(0x52);
+		spi8(1);
+		// finish up
+		DisableIO();
+
+		user_io_file_mount("../../root/alttp_msu-1.pcm", 0, 1);
+
+		// Tell FPGA we have finished mounting the file
+		spi_uio_cmd_cont(0x51);
+		spi8(1);
+		// finish up
+		DisableIO();
+	}
 }
