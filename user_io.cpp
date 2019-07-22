@@ -1455,6 +1455,11 @@ int user_io_file_tx(const char* name, unsigned char index, char opensave, char m
 		send_pcolchr(name, (index & 0x1F) | 0x60, 1);
 	}
 
+  if (is_snes_core())
+	{
+		// Determine if MSU files are present. Setup and notify the core accordingly
+		snes_msu_init(name);
+	}
 
 	return 1;
 }
