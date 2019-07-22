@@ -3,30 +3,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include <inttypes.h>
-#include <sys/types.h>
-#include <unistd.h>
-#include <sys/wait.h>
 
 #include "../../file_io.h"
 #include "../../user_io.h"
 
 static uint8_t hdr[512];
 char snes_msu_currenttrack(0x00);
-
-void run_process(const char* path, const char* file) {
-    pid_t child_pid;
-
-    /* Duplicate this process.  */
-    child_pid = fork();
-
-    if (child_pid == 0) {
-		// this is in the child
-        execl(path, path, "-f", "cd", file, NULL);
-        /* The execvp function returns only if an error occurs.  */
-        printf("an error occurred in execl\n");
-        abort();
-    }
-}
 
 enum HeaderField {
 	CartName = 0x00,
@@ -280,6 +262,23 @@ uint8_t* snes_get_header(fileTYPE *f)
 	return hdr;
 }
 
+char snes_romFileName[1024] = { 0 };
+
+void snes_msu_init(const char* name)
+{
+	fileTYPE f = {};
+	static char msuFileName[1024] = { 0 };
+
+	printf("Checking if MSU files exist for rom '%s'\n", name);
+	strncpy(snes_romFileName, name, strlen(name) - 4);
+	sprintf(msuFileName, "%s-1.pcm", snes_romFileName);
+	printf("Checking for PCM file: %s\n", msuFileName);
+
+	if (!FileOpen(&f, msuFileName)) return;
+	
+	// @todo tell core that file is MSU
+}
+
 char snes_read_msu_trackout(void)
 {
 	char msu_trackout;
@@ -296,25 +295,31 @@ char snes_read_msu_trackout(void)
 
 void snes_poll(void)
 {
-	char msu_trackout;
+    static char SelectedPath[1024] = { 0 };
+    
+    char msu_trackout;
 
-	msu_trackout = snes_read_msu_trackout();
-	if (msu_trackout != snes_msu_currenttrack) {
-		printf("SNES MSU - new track 0x%X selected\n", msu_trackout);
-		snes_msu_currenttrack = msu_trackout;
+    msu_trackout = snes_read_msu_trackout();
+    if (msu_trackout != snes_msu_currenttrack) 
+	{
+        printf("SNES MSU - new track 0x%X selected\n", msu_trackout);
+        snes_msu_currenttrack = msu_trackout;
+        
+        sprintf(SelectedPath, "%s-%d.pcm", snes_romFileName, msu_trackout);
+        printf("Full MSU track path is: %s\n", SelectedPath);
+        
+        // Tell FPGA we are mounting the file
+        spi_uio_cmd_cont(0x52);
+        spi8(1);
+        // finish up
+        DisableIO();
 
-		// Tell FPGA we are mounting the file
-		spi_uio_cmd_cont(0x52);
-		spi8(1);
-		// finish up
-		DisableIO();
+        user_io_file_mount(SelectedPath, 1);
 
-		user_io_file_mount("../../root/alttp_msu-1.pcm", 0, 1);
-
-		// Tell FPGA we have finished mounting the file
-		spi_uio_cmd_cont(0x51);
-		spi8(1);
-		// finish up
-		DisableIO();
-	}
+        // Tell FPGA we have finished mounting the file
+        spi_uio_cmd_cont(0x51);
+        spi8(1);
+        // finish up
+        DisableIO();
+    }
 }
