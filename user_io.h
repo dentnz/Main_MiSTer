@@ -249,6 +249,10 @@ void user_io_store_filename(char *filename);
 int user_io_use_cheats();
 
 void diskled_on();
+
+void user_io_sd_set_config(void);
+uint16_t user_io_sd_get_status(uint32_t *lba);
+
 #define DISKLED_ON  diskled_on()
 #define DISKLED_OFF void()
 

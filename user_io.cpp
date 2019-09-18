@@ -1772,106 +1772,140 @@ void user_io_poll()
 	{
 		x86_poll();
 	}
-	else if ((core_type == CORE_TYPE_8BIT || core_type == CORE_TYPE_ARCHIE || is_snes_core()) && !is_menu_core())
+	else if ((core_type == CORE_TYPE_8BIT || core_type == CORE_TYPE_ARCHIE) && !is_menu_core())
 	{
-		static uint8_t buffer[4][512];
-		uint32_t lba;
-		uint16_t c = user_io_sd_get_status(&lba);
-		//if(c&3) printf("user_io_sd_get_status: cmd=%02x, lba=%08x\n", c, lba);
-
-		// valid sd commands start with "5x" to avoid problems with
-		// cores that don't implement this command
-		if ((c & 0xf0) == 0x50)
+		// SNES core handles it's own SD card emulation now in the support/snes folder
+		if (!is_snes_core())
 		{
-			// check if core requests configuration
-			if (c & 0x08)
-			{
-				printf("core requests SD config\n");
-				user_io_sd_set_config();
-			}
+			static uint8_t buffer[4][512];
+			uint32_t lba;
+			uint16_t c = user_io_sd_get_status(&lba);
+			//if(c&3) printf("user_io_sd_get_status: cmd=%02x, lba=%08x\n", c, lba);
 
-			if(c & 0x3802)
+			// valid sd commands start with "5x" to avoid problems with
+			// cores that don't implement this command
+			if ((c & 0xf0) == 0x50)
 			{
-				int disk = 3;
-				if (c & 0x0002) disk = 0;
-				else if (c & 0x0800) disk = 1;
-				else if (c & 0x1000) disk = 2;
-
-				// only write if the inserted card is not sdhc or
-				// if the core uses sdhc
-				if(c & 0x04)
+				// check if core requests configuration
+				if (c & 0x08)
 				{
-					//printf("SD WR %d on %d\n", lba, disk);
+					printf("core requests SD config\n");
+					user_io_sd_set_config();
+				}
 
-					int done = 0;
-					buffer_lba[disk] = lba;
+				if(c & 0x3802)
+				{
+					int disk = 3;
+					if (c & 0x0002) disk = 0;
+					else if (c & 0x0800) disk = 1;
+					else if (c & 0x1000) disk = 2;
 
-					// Fetch sector data from FPGA ...
-					spi_uio_cmd_cont(UIO_SECTOR_WR);
-					spi_block_read(buffer[disk], fio_size);
-					DisableIO();
-
-
-					if (sd_image[disk].type == 2 && !lba)
+					// only write if the inserted card is not sdhc or
+					// if the core uses sdhc
+					if(c & 0x04)
 					{
-						//Create the file
-						if (FileOpenEx(&sd_image[disk], sd_image[disk].path, O_CREAT | O_RDWR | O_SYNC))
+						//printf("SD WR %d on %d\n", lba, disk);
+
+						int done = 0;
+						buffer_lba[disk] = lba;
+
+						// Fetch sector data from FPGA ...
+						spi_uio_cmd_cont(UIO_SECTOR_WR);
+						spi_block_read(buffer[disk], fio_size);
+						DisableIO();
+
+
+						if (sd_image[disk].type == 2 && !lba)
 						{
-							diskled_on();
-							if (FileWriteSec(&sd_image[disk], buffer[disk]))
+							//Create the file
+							if (FileOpenEx(&sd_image[disk], sd_image[disk].path, O_CREAT | O_RDWR | O_SYNC))
 							{
-								sd_image[disk].size = 512;
-								done = 1;
+								diskled_on();
+								if (FileWriteSec(&sd_image[disk], buffer[disk]))
+								{
+									sd_image[disk].size = 512;
+									done = 1;
+								}
+							}
+							else
+							{
+								printf("Error in creating file: %s\n", sd_image[disk].path);
 							}
 						}
 						else
 						{
-							printf("Error in creating file: %s\n", sd_image[disk].path);
-						}
-					}
-					else
-					{
-						// ... and write it to disk
-						__off64_t size = sd_image[disk].size>>9;
-						if (size && size>=lba)
-						{
-							diskled_on();
-							if (FileSeekLBA(&sd_image[disk], lba))
+							// ... and write it to disk
+							__off64_t size = sd_image[disk].size>>9;
+							if (size && size>=lba)
 							{
-								if (FileWriteSec(&sd_image[disk], buffer[disk]))
+								diskled_on();
+								if (FileSeekLBA(&sd_image[disk], lba))
 								{
-									done = 1;
-									if (size == lba)
+									if (FileWriteSec(&sd_image[disk], buffer[disk]))
 									{
-										size++;
-										sd_image[disk].size = size << 9;
+										done = 1;
+										if (size == lba)
+										{
+											size++;
+											sd_image[disk].size = size << 9;
+										}
 									}
 								}
 							}
 						}
+
+						if (!done) buffer_lba[disk] = -1;
+					}
+				}
+				else
+				if (c & 0x0701)
+				{
+					int disk = 3;
+					if (c & 0x0001) disk = 0;
+					else if (c & 0x0100) disk = 1;
+					else if (c & 0x0200) disk = 2;
+
+					//printf("SD RD %d on %d, WIDE=%d\n", lba, disk, fio_size);
+
+					int done = 0;
+
+					if (buffer_lba[disk] != lba)
+					{
+						if (sd_image[disk].size)
+						{
+							diskled_on();
+							if (FileSeekLBA(&sd_image[disk], lba))
+							{
+								if (FileReadSec(&sd_image[disk], buffer[disk]))
+								{
+									done = 1;
+								}
+							}
+						}
+
+						//Even after error we have to provide the block to the core
+						//Give an empty block.
+						if (!done) memset(buffer[disk], 0, sizeof(buffer[disk]));
+						buffer_lba[disk] = lba;
 					}
 
-					if (!done) buffer_lba[disk] = -1;
-				}
-			}
-			else
-			if (c & 0x0701)
-			{
-				int disk = 3;
-				if (c & 0x0001) disk = 0;
-				else if (c & 0x0100) disk = 1;
-				else if (c & 0x0200) disk = 2;
+					if(buffer_lba[disk] == lba)
+					{
+						//hexdump(buffer, 32, 0);
 
-				//printf("SD RD %d on %d, WIDE=%d\n", lba, disk, fio_size);
+						// data is now stored in buffer. send it to fpga
+						spi_uio_cmd_cont(UIO_SECTOR_RD);
+						spi_block_write(buffer[disk], fio_size);
+						DisableIO();
+					}
 
-				int done = 0;
-
-				if (buffer_lba[disk] != lba)
-				{
+					// just load the next sector now, so it may be prefetched
+					// for the next request already
+					done = 0;
 					if (sd_image[disk].size)
 					{
 						diskled_on();
-						if (FileSeekLBA(&sd_image[disk], lba))
+						if (FileSeekLBA(&sd_image[disk], lba + 1))
 						{
 							if (FileReadSec(&sd_image[disk], buffer[disk]))
 							{
@@ -1879,44 +1913,16 @@ void user_io_poll()
 							}
 						}
 					}
+					if(done) buffer_lba[disk] = lba + 1;
 
-					//Even after error we have to provide the block to the core
-					//Give an empty block.
-					if (!done) memset(buffer[disk], 0, sizeof(buffer[disk]));
-					buffer_lba[disk] = lba;
-				}
-
-				if(buffer_lba[disk] == lba)
-				{
-					//hexdump(buffer, 32, 0);
-
-					// data is now stored in buffer. send it to fpga
-					spi_uio_cmd_cont(UIO_SECTOR_RD);
-					spi_block_write(buffer[disk], fio_size);
-					DisableIO();
-				}
-
-				// just load the next sector now, so it may be prefetched
-				// for the next request already
-				done = 0;
-				if (sd_image[disk].size)
-				{
-					diskled_on();
-					if (FileSeekLBA(&sd_image[disk], lba + 1))
+					if (sd_image[disk].type == 2)
 					{
-						if (FileReadSec(&sd_image[disk], buffer[disk]))
-						{
-							done = 1;
-						}
+						buffer_lba[disk] = -1;
 					}
 				}
-				if(done) buffer_lba[disk] = lba + 1;
-
-				if (sd_image[disk].type == 2)
-				{
-					buffer_lba[disk] = -1;
-				}
 			}
+		} else {
+			snes_sd_handling(buffer_lba, sd_image, fio_size);
 		}
 	}
 

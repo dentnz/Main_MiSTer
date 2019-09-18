@@ -3,12 +3,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <inttypes.h>
+#include <limits.h>
 
 #include "../../file_io.h"
 #include "../../user_io.h"
 
 static uint8_t hdr[512];
-char snes_msu_currenttrack(0x00);
+char snes_msu_currenttrack(0xff);
 
 enum HeaderField {
 	CartName = 0x00,
@@ -262,6 +263,7 @@ uint8_t* snes_get_header(fileTYPE *f)
 	return hdr;
 }
 
+// This gets set by snes_msu_init for use by MSU-1 support later
 char snes_romFileName[1024] = { 0 };
 
 void snes_msu_init(const char* name)
@@ -269,10 +271,10 @@ void snes_msu_init(const char* name)
 	fileTYPE f = {};
 	static char msuFileName[1024] = { 0 };
 
-	printf("Checking if MSU files exist for rom '%s'\n", name);
+	printf("SNES MSU - Checking if MSU files exist for rom '%s'\n", name);
 	strncpy(snes_romFileName, name, strlen(name) - 4);
 	sprintf(msuFileName, "%s-1.pcm", snes_romFileName);
-	printf("Checking for PCM file: %s\n", msuFileName);
+	printf("SNES MSU - Checking for PCM file: %s\n", msuFileName);
 
 	if (!FileOpen(&f, msuFileName)) return;
 	
@@ -282,15 +284,164 @@ void snes_msu_init(const char* name)
 char snes_read_msu_trackout(void)
 {
 	char msu_trackout;
-
 	// Tell FPGA to send me msu_trackout
 	spi_uio_cmd_cont(0x50);
 	// will be returned back on spi_in
 	msu_trackout = spi_in();
 	// finish up
 	DisableIO();
-
     return(msu_trackout);
+}
+	
+// Have moved this out to it's own separate thing for SNES. This will come in handy
+// when we get to Datafile
+void snes_sd_handling(uint64_t *buffer_lba, fileTYPE *sd_image, int fio_size)
+{
+	static uint8_t buffer[4][512];
+	uint32_t lba;
+	uint16_t c = user_io_sd_get_status(&lba);
+
+	__off64_t size = sd_image[1].size>>9;
+
+	// valid sd commands start with "5x" to avoid problems with
+	// cores that don't implement this command
+	if ((c & 0xf0) == 0x50)
+	{
+		// check if core requests configuration
+		if (c & 0x08)
+		{
+			printf("core requests SD config\n");
+			user_io_sd_set_config();
+		}
+
+		if(c & 0x3802)
+		{
+			int disk = 3;
+			if (c & 0x0002) disk = 0;
+			else if (c & 0x0800) disk = 1;
+			else if (c & 0x1000) disk = 2;
+
+			// only write if the inserted card is not sdhc or
+			// if the core uses sdhc
+			if(c & 0x04)
+			{
+				//printf("SD WR %d on %d\n", lba, disk);
+				int done = 0;
+				buffer_lba[disk] = lba;
+
+				// Fetch sector data from FPGA ...
+				spi_uio_cmd_cont(UIO_SECTOR_WR);
+				spi_block_read(buffer[disk], fio_size);
+				DisableIO();
+
+				if (sd_image[disk].type == 2 && !lba)
+				{
+					//Create the file
+					if (FileOpenEx(&sd_image[disk], sd_image[disk].path, O_CREAT | O_RDWR | O_SYNC))
+					{
+						diskled_on();
+						if (FileWriteSec(&sd_image[disk], buffer[disk]))
+						{
+							sd_image[disk].size = 512;
+							done = 1;
+						}
+					}
+					else
+					{
+						printf("Error in creating file: %s\n", sd_image[disk].path);
+					}
+				}
+				else
+				{
+					// ... and write it to disk
+					__off64_t size = sd_image[disk].size>>9;
+					if (size && size>=lba)
+					{
+						diskled_on();
+						if (FileSeekLBA(&sd_image[disk], lba))
+						{
+							if (FileWriteSec(&sd_image[disk], buffer[disk]))
+							{
+								done = 1;
+								if (size == lba)
+								{
+									size++;
+									sd_image[disk].size = size << 9;
+								}
+							}
+						}
+					}
+				}
+
+				if (!done) buffer_lba[disk] = -1;
+			}
+		}
+		else if (c & 0x0701)
+		{
+			// Reads
+			int disk = 3;
+			if (c & 0x0001) disk = 0;
+			else if (c & 0x0100) disk = 1;
+			else if (c & 0x0200) disk = 2;
+
+			int done = 0;
+			
+			if (buffer_lba[disk] != lba)
+			{
+				if (sd_image[disk].size)
+				{
+					diskled_on();
+					if (FileSeekLBA(&sd_image[disk], lba))
+					{
+						if (FileReadSec(&sd_image[disk], buffer[disk]))
+						{
+							done = 1;
+						}
+					}
+				}
+
+				// Even after error we have to provide the block to the core
+				// Give an empty block.
+				if (!done) memset(buffer[disk], 0, sizeof(buffer[disk]));
+				buffer_lba[disk] = lba;
+			}
+
+			if(buffer_lba[disk] == lba)
+			{
+				// data is now stored in buffer. send it to fpga
+				spi_uio_cmd_cont(UIO_SECTOR_RD);
+				spi_block_write(buffer[disk], fio_size);
+				DisableIO();
+			}
+
+			// just load the next sector now, so it may be prefetched
+			// for the next request already
+			done = 0;
+			if (sd_image[disk].size)
+			{
+				diskled_on();
+				if (disk == 1 && lba + 1 == size - 2) 
+				{
+					// We have reached the end of the file
+					printf("SNES MSU - Track reached end of file\n");
+				} 
+				else if (FileSeekLBA(&sd_image[disk], lba + 1))
+				{					
+					if (FileReadSec(&sd_image[disk], buffer[disk]))
+					{
+						done = 1;
+					}
+				}
+			}
+
+			if(done) buffer_lba[disk] = lba + 1;	
+
+			if (sd_image[disk].type == 2)
+			{
+				buffer_lba[disk] = -1;
+			}
+		}
+	}
 }
 
 void snes_poll(void)
@@ -300,26 +451,24 @@ void snes_poll(void)
     char msu_trackout;
 
     msu_trackout = snes_read_msu_trackout();
+	// New Track?
     if (msu_trackout != snes_msu_currenttrack) 
 	{
-        printf("SNES MSU - new track 0x%X selected\n", msu_trackout);
+        printf("SNES MSU - New track selected: 0x%X\n", msu_trackout);
         snes_msu_currenttrack = msu_trackout;
         
         sprintf(SelectedPath, "%s-%d.pcm", snes_romFileName, msu_trackout);
-        printf("Full MSU track path is: %s\n", SelectedPath);
+        printf("SNES MSU - Full MSU track path is: %s\n", SelectedPath);
         
         // Tell FPGA we are mounting the file
         spi_uio_cmd_cont(0x52);
         spi8(1);
-        // finish up
         DisableIO();
 
         user_io_file_mount(SelectedPath, 1);
-
-        // Tell FPGA we have finished mounting the file
+		// Tell FPGA we have finished mounting the file
         spi_uio_cmd_cont(0x51);
         spi8(1);
-        // finish up
         DisableIO();
     }
 }
