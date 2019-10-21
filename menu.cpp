@@ -177,7 +177,7 @@ const char *config_tos_usb[] = { "none", "control", "debug", "serial", "parallel
 
 const char *config_memory_chip_msg[] = { "512K", "1M",   "1.5M", "2M"   };
 const char *config_memory_slow_msg[] = { "none", "512K", "1M",   "1.5M" };
-const char *config_memory_fast_msg[] = { "none", "2M",   "4M",   "24M"  };
+const char *config_memory_fast_msg[] = { "none", "2M",   "4M",   "24M", "56M", "280M", "312M" };
 
 const char *config_scanlines_msg[] = { "off", "dim", "black" };
 const char *config_ar_msg[] = { "4:3", "16:9" };
@@ -325,9 +325,10 @@ static void SelectFile(const char* pFileExt, unsigned char Options, unsigned cha
 	{
 		pFileExt = "TXT";
 	}
-	else
+	else if (strncasecmp(HomeDir, SelectedPath, strlen(HomeDir)) || !strcasecmp(HomeDir, SelectedPath))
 	{
-		if (strncasecmp(HomeDir, SelectedPath, strlen(HomeDir))) strcpy(SelectedPath, HomeDir);
+		Options &= ~SCANO_NOENTER;
+		strcpy(SelectedPath, HomeDir);
 	}
 
 	ScanDirectory(SelectedPath, SCANF_INIT, pFileExt, Options);
@@ -341,7 +342,7 @@ static void SelectFile(const char* pFileExt, unsigned char Options, unsigned cha
 
 	strcpy(fs_pFileExt, pFileExt);
 	fs_ExtLen = strlen(fs_pFileExt);
-	fs_Options = Options;
+	fs_Options = Options & ~SCANO_NOENTER;
 	fs_MenuSelect = MenuSelect;
 	fs_MenuCancel = MenuCancel;
 
@@ -797,6 +798,7 @@ void HandleUI(void)
 	struct RigidDiskBlock *rdb = nullptr;
 
 	static char opensave;
+	static char ioctl_index;
 	char *p;
 	static char s[256];
 	unsigned char m = 0, up, down, select, menu, right, left, plus, minus;
@@ -1490,10 +1492,20 @@ void HandleUI(void)
 					}
 					else if (p[0] == 'F')
 					{
-						opensave = (p[1] == 'S');
+						opensave = 0;
+						ioctl_index = menusub + 1;
+						int idx = 1;
+
+						if (p[1] == 'S')
+						{
+							opensave = 1;
+							idx++;
+						}
+
+						if (p[idx] >= '0' && p[idx] <= '9') ioctl_index = p[idx] - '0';
 						substrcpy(ext, p, 1);
 						while (strlen(ext) % 3) strcat(ext, " ");
-						SelectFile(ext, SCANO_DIR, MENU_8BIT_MAIN_FILE_SELECTED, MENU_8BIT_MAIN1);
+						SelectFile(ext, SCANO_DIR | (is_neogeo_core() ? SCANO_NEOGEO | SCANO_NOENTER : 0), MENU_8BIT_MAIN_FILE_SELECTED, MENU_8BIT_MAIN1);
 					}
 					else if (p[0] == 'S')
 					{
@@ -1563,10 +1575,19 @@ void HandleUI(void)
 
 	case MENU_8BIT_MAIN_FILE_SELECTED:
 		printf("File selected: %s\n", SelectedPath);
-		user_io_store_filename(SelectedPath);
-		user_io_file_tx(SelectedPath, user_io_ext_idx(SelectedPath, fs_pFileExt) << 6 | (menusub + 1), opensave);
-		if(user_io_use_cheats()) cheats_init(SelectedPath, user_io_get_file_crc());
-		menustate = MENU_NONE1;
+		if (fs_Options & SCANO_NEOGEO)
+		{
+			menustate = MENU_NONE1;
+			HandleUI();
+			neogeo_romset_tx(SelectedPath);
+		}
+		else
+		{
+			user_io_store_filename(SelectedPath);
+			user_io_file_tx(SelectedPath, user_io_ext_idx(SelectedPath, fs_pFileExt) << 6 | ioctl_index, opensave);
+			if (user_io_use_cheats()) cheats_init(SelectedPath, user_io_get_file_crc());
+			menustate = MENU_NONE1;
+		}
 		break;
 
 	case MENU_8BIT_MAIN_IMAGE_SELECTED:
@@ -1580,6 +1601,21 @@ void HandleUI(void)
 			user_io_set_index(user_io_ext_idx(SelectedPath, fs_pFileExt) << 6 | (menusub + 1));
 			user_io_file_mount(SelectedPath, drive_num);
 		}
+
+		if (is_neogeo_core())
+		{
+			// ElectronAsh.
+			strcpy(SelectedPath + strlen(SelectedPath) - 3, "CUE");
+			printf("Checking for presence of CUE file %s\n", SelectedPath);
+			if (user_io_file_mount(SelectedPath, 2))
+			{
+				printf("CUE file found and mounted.\n");
+				parse_cue_file();
+				char str[2] = "";
+				neogeo_romset_tx(str);
+			}
+		}
+
 		menustate = SelectedPath[0] ? MENU_NONE1 : MENU_8BIT_MAIN1;
 		break;
 
@@ -1616,7 +1652,7 @@ void HandleUI(void)
 				OsdWrite(n++, s, menusub == 3);
 			}
 
-			if (video_get_scaler_flt() >= 0)
+			if (video_get_scaler_flt() >= 0 && !cfg.direct_video)
 			{
 				OsdWrite(n++);
 				menumask |= 0x60;
@@ -3001,7 +3037,7 @@ void HandleUI(void)
 
 		if (menu)
 		{
-			if (flist_nDirEntries() && flist_SelectedItem()->d_type != DT_DIR)
+			if (flist_nDirEntries() && flist_SelectedItem()->de.d_type != DT_DIR)
 			{
 				SelectedDir[0] = 0;
 				if (strlen(SelectedPath))
@@ -3009,7 +3045,7 @@ void HandleUI(void)
 					strcpy(SelectedDir, SelectedPath);
 					strcat(SelectedPath, "/");
 				}
-				strcat(SelectedPath, flist_SelectedItem()->d_name);
+				strcat(SelectedPath, flist_SelectedItem()->de.d_name);
 			}
 
 			if (!strcasecmp(fs_pFileExt, "RBF")) SelectedPath[0] = 0;
@@ -3069,9 +3105,9 @@ void HandleUI(void)
 
 			if (select)
 			{
-				if (flist_SelectedItem()->d_type == DT_DIR)
+				if (flist_SelectedItem()->de.d_type == DT_DIR)
 				{
-					changeDir(flist_SelectedItem()->d_name);
+					changeDir(flist_SelectedItem()->de.d_name);
 					menustate = MENU_FILE_SELECT1;
 				}
 				else
@@ -3084,8 +3120,8 @@ void HandleUI(void)
 							strcpy(SelectedDir, SelectedPath);
 							strcat(SelectedPath, "/");
 						}
-						strcat(SelectedPath, flist_SelectedItem()->d_name);
 
+						strcat(SelectedPath, flist_SelectedItem()->de.d_name);
 						menustate = fs_MenuSelect;
 					}
 				}
@@ -3276,7 +3312,7 @@ void HandleUI(void)
 					minimig_config.hardfile[2].enabled ||
 					minimig_config.hardfile[3].enabled)) ? "/HD" : "",
 				config_memory_chip_msg[minimig_config.memory & 0x03],
-				config_memory_fast_msg[(minimig_config.memory >> 4) & 0x03],
+				config_memory_fast_msg[((minimig_config.memory >> 4) & 0x03) | ((minimig_config.memory&0x80) >> 5)],
 				((minimig_config.memory >> 2) & 0x03) ? "+" : "",
 				((minimig_config.memory >> 2) & 0x03) ? config_memory_slow_msg[(minimig_config.memory >> 2) & 0x03] : "",
 				(minimig_config.memory & 0x40) ? " HRT" : ""
@@ -3446,7 +3482,7 @@ void HandleUI(void)
 		strcat(s, config_memory_chip_msg[minimig_config.memory & 0x03]);
 		OsdWrite(1, s, menusub == 0, 0);
 		strcpy(s, " FAST   : ");
-		strcat(s, config_memory_fast_msg[(minimig_config.memory >> 4) & 0x03]);
+		strcat(s, config_memory_fast_msg[((minimig_config.memory >> 4) & 0x03) | ((minimig_config.memory&0x80) >> 5)]);
 		OsdWrite(2, s, menusub == 1, 0);
 		strcpy(s, " SLOW   : ");
 		strcat(s, config_memory_slow_msg[(minimig_config.memory >> 2) & 0x03]);
@@ -3462,7 +3498,10 @@ void HandleUI(void)
 		strcat(s, (minimig_config.memory & 0x40) ? "enabled " : "disabled");
 		OsdWrite(6, s, menusub == 4, 0);
 
-		for (int i = 7; i < OsdGetSize() - 1; i++) OsdWrite(i, "", 0, 0);
+		OsdWrite(7, "", 0, 0);
+		OsdWrite(8, ((minimig_config.memory & 0x80) && !(minimig_config.memory & 0x10) && !(sdram_sz() & 2)) ? "  ** 64MB SDRAM REQUIRED **" : "", 0, 0);
+
+		for (int i = 9; i < OsdGetSize() - 1; i++) OsdWrite(i, "", 0, 0);
 		OsdWrite(OsdGetSize() - 1, STD_EXIT, menusub == 5, 0);
 
 		menustate = MENU_SETTINGS_MEMORY2;
@@ -3478,7 +3517,9 @@ void HandleUI(void)
 			}
 			else if (menusub == 1)
 			{
-				minimig_config.memory = ((minimig_config.memory + 0x10) & 0x30) | (minimig_config.memory & ~0x30);
+				uint8_t c = (((minimig_config.memory >> 4) & 0x03) | ((minimig_config.memory & 0x80) >> 5))+1;
+				if (c > 6) c = 0;
+				minimig_config.memory = ((c<<4) & 0x30) | ((c<<5) & 0x80) | (minimig_config.memory & ~0xB0);
 				menustate = MENU_SETTINGS_MEMORY1;
 			}
 			else if (menusub == 2)
@@ -4081,7 +4122,7 @@ void HandleUI(void)
 		helptext = 0;
 		menumask = 1;
 		menusub = 0;
-		OsdSetTitle((parentstate == MENU_BTPAIR) ? "BT Pairing" : flist_SelectedItem()->d_name, 0);
+		OsdSetTitle((parentstate == MENU_BTPAIR) ? "BT Pairing" : flist_SelectedItem()->de.d_name, 0);
 		menustate = MENU_SCRIPTS1;
 		if (parentstate != MENU_BTPAIR) parentstate = MENU_SCRIPTS;
 		for (int i = 0; i < OsdGetSize() - 1; i++) OsdWrite(i, "", 0, 0);
@@ -4134,7 +4175,7 @@ void HandleUI(void)
 			if (!script_exited)
 			{
 				strcpy(script_command, "killall ");
-				strcat(script_command, (parentstate == MENU_BTPAIR) ? "btpair" : flist_SelectedItem()->d_name);
+				strcat(script_command, (parentstate == MENU_BTPAIR) ? "btpair" : flist_SelectedItem()->de.d_name);
 				system(script_command);
 				pclose(script_pipe);
 				cpu_set_t set;
@@ -4294,7 +4335,7 @@ void HandleUI(void)
 			}
 			else
 			{
-				sprintf(str, "  MiSTer    ");
+				sprintf(str, " MiSTer      ");
 
 				time_t t = time(NULL);
 				struct tm tm = *localtime(&t);
@@ -4304,9 +4345,28 @@ void HandleUI(void)
 				}
 
 				int netType = (int)getNet(0);
-				if (netType) str[9] = 0x1b + netType;
-				if (has_bt()) str[10] = 4;
-				str[21] = ' ';
+				if (netType) str[8] = 0x1b + netType;
+				if (has_bt()) str[9] = 4;
+				if (user_io_get_sdram_cfg() & 0x8000)
+				{
+					switch (user_io_get_sdram_cfg() & 7)
+					{
+					case 7:
+						str[10] = 0x95;
+						break;
+					case 3:
+						str[10] = 0x94;
+						break;
+					case 1:
+						str[10] = 0x93;
+						break;
+					default:
+						str[10] = 0x92;
+						break;
+					}
+				}
+
+				str[22] = ' ';
 			}
 
 			OsdWrite(16, "", 1, 0);
@@ -4335,8 +4395,8 @@ void ScrollLongName(void)
 	static int len;
 	int max_len;
 
-	len = strlen(flist_SelectedItem()->d_name); // get name length
-	if (flist_SelectedItem()->d_type == DT_REG) // if a file
+	len = strlen(flist_SelectedItem()->altname); // get name length
+	if (flist_SelectedItem()->de.d_type == DT_REG) // if a file
 	{
 		if (fs_ExtLen <= 3)
 		{
@@ -4353,15 +4413,15 @@ void ScrollLongName(void)
 			e[0] = '.';
 			e[4] = 0;
 			int l = strlen(e);
-			if ((len>l) && !strncasecmp(flist_SelectedItem()->d_name + len - l, e, l)) len -= l;
+			if ((len>l) && !strncasecmp(flist_SelectedItem()->altname + len - l, e, l)) len -= l;
 		}
 	}
 
 	max_len = 30; // number of file name characters to display (one more required for scrolling)
-	if (flist_SelectedItem()->d_type == DT_DIR)
+	if (flist_SelectedItem()->de.d_type == DT_DIR)
 		max_len = 25; // number of directory name characters to display
 
-	ScrollText(flist_iSelectedEntry()-flist_iFirstEntry(), flist_SelectedItem()->d_name, 0, len, max_len, 1);
+	ScrollText(flist_iSelectedEntry()-flist_iFirstEntry(), flist_SelectedItem()->altname, 0, len, max_len, 1);
 }
 
 void PrintFileName(char *name, int row, int maxinv)
@@ -4431,9 +4491,9 @@ void PrintDirectory(void)
 		{
 			k = flist_iFirstEntry() + i;
 
-			len = strlen(flist_DirItem(k)->d_name); // get name length
+			len = strlen(flist_DirItem(k)->altname); // get name length
 
-			if (!(flist_DirItem(k)->d_type == DT_DIR)) // if a file
+			if (!(flist_DirItem(k)->de.d_type == DT_DIR)) // if a file
 			{
 				if (fs_ExtLen <= 3)
 				{
@@ -4450,7 +4510,7 @@ void PrintDirectory(void)
 					e[0] = '.';
 					e[4] = 0;
 					int l = strlen(e);
-					if ((len>l) && !strncasecmp(flist_DirItem(k)->d_name + len - l, e, l))
+					if ((len>l) && !strncasecmp(flist_DirItem(k)->altname + len - l, e, l))
 					{
 						len -= l;
 					}
@@ -4458,9 +4518,9 @@ void PrintDirectory(void)
 			}
 
 			char *p = 0;
-			if ((fs_Options & SCANO_CORES) && len > 9 && !strncmp(flist_DirItem(k)->d_name + len - 9, "_20", 3))
+			if ((fs_Options & SCANO_CORES) && len > 9 && !strncmp(flist_DirItem(k)->altname + len - 9, "_20", 3))
 			{
-				p = flist_DirItem(k)->d_name + len - 6;
+				p = flist_DirItem(k)->altname + len - 6;
 				len -= 9;
 			}
 
@@ -4470,18 +4530,18 @@ void PrintDirectory(void)
 				s[28] = 22;
 			}
 
-			if((flist_DirItem(k)->d_type == DT_DIR) && (fs_Options & SCANO_CORES) && (flist_DirItem(k)->d_name[0] == '_'))
+			if((flist_DirItem(k)->de.d_type == DT_DIR) && (fs_Options & SCANO_CORES) && (flist_DirItem(k)->altname[0] == '_'))
 			{
-				strncpy(s + 1, flist_DirItem(k)->d_name+1, len-1);
+				strncpy(s + 1, flist_DirItem(k)->altname+1, len-1);
 			}
 			else
 			{
-				strncpy(s + 1, flist_DirItem(k)->d_name, len); // display only name
+				strncpy(s + 1, flist_DirItem(k)->altname, len); // display only name
 			}
 
-			if (flist_DirItem(k)->d_type == DT_DIR) // mark directory with suffix
+			if (flist_DirItem(k)->de.d_type == DT_DIR) // mark directory with suffix
 			{
-				if (!strcmp(flist_DirItem(k)->d_name, ".."))
+				if (!strcmp(flist_DirItem(k)->altname, ".."))
 				{
 					strcpy(&s[19], " <UP-DIR>");
 				}

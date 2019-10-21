@@ -69,6 +69,7 @@
 #define UIO_GET_OSDMASK 0x2E  // Get mask
 #define UIO_SET_FBUF    0x2F  // Set frame buffer for HPS output
 #define UIO_WAIT_VSYNC  0x30  // Wait for VSync
+#define UIO_SET_MEMSZ   0x31  // Send memory size to the core
 
 // codes as used by 8bit for file loading from OSD
 #define UIO_FILE_TX     0x53
@@ -119,25 +120,28 @@
 #define KBD_LED_FLAG_MASK     0xC0
 #define KBD_LED_FLAG_STATUS   0x40
 
-#define BUTTON1                 0b0000000001
-#define BUTTON2                 0b0000000010
-#define CONF_VGA_SCALER         0b0000000100
-#define CONF_CSYNC              0b0000001000
-#define CONF_FORCED_SCANDOUBLER 0b0000010000
-#define CONF_YPBPR              0b0000100000
-#define CONF_AUDIO_96K          0b0001000000
-#define CONF_DVI                0b0010000000
-#define CONF_HDMI_LIMITED       0b0100000000
-#define CONF_VGA_SOG            0b1000000000
+#define BUTTON1                 0b0000000000000001
+#define BUTTON2                 0b0000000000000010
+#define CONF_VGA_SCALER         0b0000000000000100
+#define CONF_CSYNC              0b0000000000001000
+#define CONF_FORCED_SCANDOUBLER 0b0000000000010000
+#define CONF_YPBPR              0b0000000000100000
+#define CONF_AUDIO_96K          0b0000000001000000
+#define CONF_DVI                0b0000000010000000
+#define CONF_HDMI_LIMITED1      0b0000000100000000
+#define CONF_VGA_SOG            0b0000001000000000
+#define CONF_DIRECT_VIDEO       0b0000010000000000
+#define CONF_HDMI_LIMITED2      0b0000100000000000
 
 // core type value should be unlikely to be returned by broken cores
 #define CORE_TYPE_UNKNOWN   0x55
 #define CORE_TYPE_DUMB      0xa0   // core without any io controller interaction
 #define CORE_TYPE_MIST      0xa3   // mist atari st core
-#define CORE_TYPE_8BIT      0xa4   // atari 800/c64 like core
+#define CORE_TYPE_8BIT      0xa4   // generic core
 #define CORE_TYPE_MINIMIG2  0xa5   // new Minimig with AGA
 #define CORE_TYPE_ARCHIE    0xa6   // Acorn Archimedes
 #define CORE_TYPE_SHARPMZ   0xa7   // Sharp MZ Series
+#define CORE_TYPE_8BIT2     0xa8   // generic core using dual SDRAM
 
 #define UART_FLG_PPP        0x0001
 #define UART_FLG_TERM       0x0002
@@ -182,9 +186,6 @@ typedef struct {
 
 void user_io_init(const char *path);
 unsigned char user_io_core_type();
-char is_minimig();
-char is_archie();
-char is_sharpmz();
 void user_io_poll();
 char user_io_menu_button();
 char user_io_user_button();
@@ -198,9 +199,6 @@ int  user_io_file_mount(char *name, unsigned char index = 0, char pre = 0);
 char user_io_serial_status(serial_status_t *, uint8_t);
 char *user_io_get_core_name();
 const char *user_io_get_core_name_ex();
-char is_menu_core();
-char is_x86_core();
-char is_snes_core();
 char has_menu();
 
 const char *get_image_name(int i);
@@ -225,6 +223,7 @@ void user_io_set_joyswap(int swap);
 int user_io_get_joyswap();
 char user_io_osd_is_visible();
 void user_io_send_buttons(char);
+uint16_t user_io_get_sdram_cfg();
 
 void user_io_set_index(unsigned char index);
 unsigned char user_io_ext_idx(char *, char*);
@@ -235,8 +234,11 @@ void user_io_rtc_reset();
 
 const char* get_rbf_dir();
 const char* get_rbf_name();
+const char* get_rbf_path();
 
-#define HomeDir (is_minimig() ? "Amiga" : is_archie() ? "Archie" : is_menu_core() ? "Scripts" : user_io_get_core_name())
+uint16_t sdram_sz(int sz = -1);
+int user_io_is_dualsdr();
+uint16_t altcfg(int alt = -1);
 
 int GetUARTMode();
 int GetMidiLinkMode();
@@ -251,9 +253,21 @@ int user_io_use_cheats();
 void diskled_on();
 
 void user_io_sd_set_config(void);
-uint16_t user_io_sd_get_status(uint32_t *lba);
+uint16_t user_io_sd_get_status(uint32_t *lba, uint16_t *req_type);
 
 #define DISKLED_ON  diskled_on()
 #define DISKLED_OFF void()
+
+void parse_cue_file(void);
+
+char is_minimig();
+char is_archie();
+char is_sharpmz();
+char is_menu_core();
+char is_x86_core();
+char is_snes_core();
+char is_neogeo_core();
+
+#define HomeDir (is_minimig() ? "Amiga" : is_archie() ? "Archie" : is_menu_core() ? "Scripts" : user_io_get_core_name())
 
 #endif // USER_IO_H

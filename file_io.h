@@ -21,11 +21,18 @@ typedef struct
 	char            name[261];
 }  fileTYPE;
 
+struct direntext_t
+{
+	dirent de;
+	int  cookie;
+	char altname[256];
+};
+
 int flist_nDirEntries();
 int flist_iFirstEntry();
 int flist_iSelectedEntry();
-dirent* flist_DirItem(int n);
-dirent* flist_SelectedItem();
+direntext_t* flist_DirItem(int n);
+direntext_t* flist_SelectedItem();
 
 // scanning flags
 #define SCANF_INIT       0 // start search from beginning of directory
@@ -41,6 +48,8 @@ dirent* flist_SelectedItem();
 #define SCANO_UMOUNT     2 // allow backspace key
 #define SCANO_CORES      4 // only include subdirectories with prefix '_'
 #define SCANO_COEFF      8
+#define SCANO_NEOGEO     16
+#define SCANO_NOENTER    32
 
 void FindStorage();
 int  getStorage(int from_setting);

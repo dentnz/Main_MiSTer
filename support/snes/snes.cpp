@@ -7,9 +7,10 @@
 
 #include "../../file_io.h"
 #include "../../user_io.h"
+#include "../../menu.h"
 
 static uint8_t hdr[512];
-char snes_msu_currenttrack(0xff);
+char snes_msu_currenttrack(0x00);
 
 enum HeaderField {
 	CartName = 0x00,
@@ -270,15 +271,22 @@ void snes_msu_init(const char* name)
 {
 	fileTYPE f = {};
 	static char msuFileName[1024] = { 0 };
-
-	printf("SNES MSU - Checking if MSU files exist for rom '%s'\n", name);
+	static char msuMessage[256];
+	// Clear our our rom file name
+	memset(snes_romFileName, 0, 1024);
 	strncpy(snes_romFileName, name, strlen(name) - 4);
-	sprintf(msuFileName, "%s-1.pcm", snes_romFileName);
-	printf("SNES MSU - Checking for PCM file: %s\n", msuFileName);
-
-	if (!FileOpen(&f, msuFileName)) return;
 	
-	// @todo tell core that file is MSU
+	printf("SNES MSU - rom named '%s' initialised\n", name);
+	snes_msu_currenttrack = 0x00;
+	
+	sprintf(msuFileName, "%s.msu", snes_romFileName);
+	printf("SNES MSU - Checking for MSU datafile: %s\n", msuFileName);
+	if (!FileOpen(&f, msuFileName)) {
+		printf("SNES MSU - MSU datafile not found");
+		
+		return;
+	}
+	user_io_file_mount(msuFileName, 2);
 }
 
 char snes_read_msu_trackout(void)
@@ -290,6 +298,7 @@ char snes_read_msu_trackout(void)
 	msu_trackout = spi_in();
 	// finish up
 	DisableIO();
+	
     return(msu_trackout);
 }
 	
@@ -299,7 +308,7 @@ void snes_sd_handling(uint64_t *buffer_lba, fileTYPE *sd_image, int fio_size)
 {
 	static uint8_t buffer[4][512];
 	uint32_t lba;
-	uint16_t c = user_io_sd_get_status(&lba);
+	uint16_t c = user_io_sd_get_status(&lba, 0);
 
 	__off64_t size = sd_image[1].size>>9;
 
@@ -422,8 +431,7 @@ void snes_sd_handling(uint64_t *buffer_lba, fileTYPE *sd_image, int fio_size)
 				diskled_on();
 				if (disk == 1 && lba + 1 == size - 2) 
 				{
-					// We have reached the end of the file
-					printf("SNES MSU - Track reached end of file\n");
+					printf("SNES MSU - Track reaching end of file\n");
 				} 
 				else if (FileSeekLBA(&sd_image[disk], lba + 1))
 				{					
@@ -446,27 +454,57 @@ void snes_sd_handling(uint64_t *buffer_lba, fileTYPE *sd_image, int fio_size)
 
 void snes_poll(void)
 {
+	fileTYPE f = {};
     static char SelectedPath[1024] = { 0 };
+	static char msuErrorMessage[256] = { 0 };
     
     char msu_trackout;
+	char msu_trackrequest;
+	
+    //msu_trackout = snes_read_msu_trackout();
 
-    msu_trackout = snes_read_msu_trackout();
+	// Tell FPGA to send me msu_trackout and msu_trackrequest
+	spi_uio_cmd_cont(0x50);
+	msu_trackout = spi_in();
+	msu_trackrequest = spi_in();
+	// finish up
+	DisableIO();
+
 	// New Track?
-    if (msu_trackout != snes_msu_currenttrack) 
+	// @todo need a better way to detect a track has been selected for playback... as this will not cope with being
+	// supplied the same track number... :(
+    if (msu_trackrequest == 1) 
 	{
         printf("SNES MSU - New track selected: 0x%X\n", msu_trackout);
         snes_msu_currenttrack = msu_trackout;
         
         sprintf(SelectedPath, "%s-%d.pcm", snes_romFileName, msu_trackout);
         printf("SNES MSU - Full MSU track path is: %s\n", SelectedPath);
-        
+
+		if (strlen(snes_romFileName) == 0) {
+			sprintf(msuErrorMessage, "MSU1 - No romname\nReload the rom or core");
+			Info(msuErrorMessage, 5000);
+			return;
+		}
+
+		if (!FileOpen(&f, SelectedPath)) {
+			// Tell FPGA we couldn't mount the file correctly (trackmissing status will go high, audio busy will go low)
+			spi_uio_cmd_cont(0x4f);
+        	spi8(1);
+        	DisableIO();
+			sprintf(msuErrorMessage, "MSU1 - Track not found: %d", msu_trackout);
+			Info(msuErrorMessage, 3000);
+			return;
+		}
+
+		// Track wasn't missing! Let's make it available to the FPGA
         // Tell FPGA we are mounting the file
         spi_uio_cmd_cont(0x52);
         spi8(1);
         DisableIO();
 
         user_io_file_mount(SelectedPath, 1);
-		// Tell FPGA we have finished mounting the file
+		// Tell FPGA we have finished mounting the file, trackmissing will go low also
         spi_uio_cmd_cont(0x51);
         spi8(1);
         DisableIO();
