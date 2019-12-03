@@ -16,6 +16,7 @@ endif
 
 INCLUDE	= -I./
 INCLUDE	+= -I./support/minimig
+INCLUDE += -I./support/snes
 INCLUDE	+= -I./lib/libco
 INCLUDE	+= -I./lib/miniz
 

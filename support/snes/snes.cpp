@@ -8,6 +8,7 @@
 #include "../../file_io.h"
 #include "../../user_io.h"
 #include "../../menu.h"
+#include "ringbuffer.h"
 
 static uint8_t hdr[512];
 char snes_msu_currenttrack(0x00);
@@ -267,50 +268,125 @@ uint8_t* snes_get_header(fileTYPE *f)
 // This gets set by snes_msu_init for use by MSU-1 support later
 char snes_romFileName[1024] = { 0 };
 
+//uint8_t msu_data_array[0x2000000];
+uint8_t msu_data_loaded = 0;
+
 void snes_msu_init(const char* name)
 {
 	fileTYPE f = {};
 	static char msuFileName[1024] = { 0 };
-	static char msuMessage[256];
 	// Clear our our rom file name
 	memset(snes_romFileName, 0, 1024);
 	strncpy(snes_romFileName, name, strlen(name) - 4);
 	
-	printf("SNES MSU - rom named '%s' initialised\n", name);
+	printf("SNES MSU - Rom named '%s' initialised\n", name);
 	snes_msu_currenttrack = 0x00;
 	
 	sprintf(msuFileName, "%s.msu", snes_romFileName);
 	printf("SNES MSU - Checking for MSU datafile: %s\n", msuFileName);
 	if (!FileOpen(&f, msuFileName)) {
 		printf("SNES MSU - MSU datafile not found");
-		
 		return;
 	}
-	user_io_file_mount(msuFileName, 2);
+	else user_io_file_mount(msuFileName, 2);
+	msu_data_loaded = 1;
 }
 
+// Tell the FPGA that the dataseek is finished on the HPS side
+void snes_write_dataseek_finished(void)
+{
+	spi_uio_cmd_cont(0x54);
+	spi8(1);
+	DisableIO();
+	printf("SNES MSU - MSU dataseek finished\n");
+}
+
+// Get the FPGA's msu_trackout number
 char snes_read_msu_trackout(void)
 {
 	char msu_trackout;
-	// Tell FPGA to send me msu_trackout
 	spi_uio_cmd_cont(0x50);
-	// will be returned back on spi_in
 	msu_trackout = spi_in();
-	// finish up
 	DisableIO();
 	
-    return(msu_trackout);
+	return(msu_trackout);
 }
-	
-// Have moved this out to it's own separate thing for SNES. This will come in handy
-// when we get to Datafile
+
+char snes_msu_read_dataseek(void)
+{
+	char msu_data_seek;
+	spi_uio_cmd_cont(0x53);
+	msu_data_seek = spi_in();
+	DisableIO();
+
+	return(msu_data_seek);	
+}
+
+ringbuffer<uint8_t> buf(1048576 * 8);
+uint8_t msu_data_array[0x800000];
+uint8_t topup_buffer = 0;
+
+// void snes_msu_do_dataseek()
+// {
+// 	printf("SNES MSU - Seeking");
+
+// 	if (msu_data_loaded == 1) {
+// 		memset(msu_data_array, 0, 1048576 * 8);
+// 		buf.clear();
+// 		printf("SNES MSU - Loading 8mb of MSU datafile into a temp array...\n");
+// 		msu_data_loaded = 0;
+// 		FileSeekLBA(&sd_image[2], 0);
+// 		//FileReadAdv(&sd_image[2], msu_data_array, 0x2000000);
+// 		// load 2mb into ram, and then copy 1mb of that into the ring buffer
+// 		FileReadAdv(&sd_image[2], msu_data_array, 0x800000);
+// 		printf("SNES MSU - Putting 8mb of that temp array into the ringbuffer\n");
+// 		buf.write(msu_data_array, 1048576 * 8);
+// 		topup_buffer = 1;
+
+// 		snes_write_dataseek_finished();
+// 	}
+// }
+
 void snes_sd_handling(uint64_t *buffer_lba, fileTYPE *sd_image, int fio_size)
 {
 	static uint8_t buffer[4][512];
 	uint32_t lba;
 	uint16_t c = user_io_sd_get_status(&lba, 0);
-
 	__off64_t size = sd_image[1].size>>9;
+	
+	// TODO put this out to a separate topup function
+	if (topup_buffer == 1 && buf.getFree() <= (uint32_t)1048576 * 2 && buf.getFree() >= (uint32_t)1048576 && sd_image[2].size) {
+		printf("SNES MSU - Topping up the ringbuffer...\n");
+		uint8_t tempBuffer[0x100000];
+		FileReadAdv(&sd_image[2], tempBuffer, 0x100000);
+		buf.write(tempBuffer, 1048576);
+	}
+
+	char msu_data_seek;
+	spi_uio_cmd_cont(0x53);
+	msu_data_seek = spi_in();
+	DisableIO();
+
+	if (msu_data_seek)
+	{
+		// TODO put this out to a separate seek function
+		//snes_msu_do_dataseek();
+		printf("SNES MSU - Seeking\n");
+
+		if (msu_data_loaded == 1) {
+			memset(msu_data_array, 0, 1048576 * 8);
+			buf.clear();
+			printf("SNES MSU - Loading 8mb of MSU datafile into a temp array...\n");
+			msu_data_loaded = 0;
+			FileSeekLBA(&sd_image[2], 0);
+			FileReadAdv(&sd_image[2], msu_data_array, 0x800000);
+			printf("SNES MSU - Putting 8mb of that temp array into the ringbuffer\n");
+			buf.write(msu_data_array, 1048576 * 8);
+			topup_buffer = 1;
+
+			snes_write_dataseek_finished();
+		}
+	}
 
 	// valid sd commands start with "5x" to avoid problems with
 	// cores that don't implement this command
@@ -366,7 +442,6 @@ void snes_sd_handling(uint64_t *buffer_lba, fileTYPE *sd_image, int fio_size)
 					__off64_t size = sd_image[disk].size>>9;
 					if (size && size>=lba)
 					{
-						diskled_on();
 						if (FileSeekLBA(&sd_image[disk], lba))
 						{
 							if (FileWriteSec(&sd_image[disk], buffer[disk]))
@@ -399,12 +474,22 @@ void snes_sd_handling(uint64_t *buffer_lba, fileTYPE *sd_image, int fio_size)
 			{
 				if (sd_image[disk].size)
 				{
-					diskled_on();
-					if (FileSeekLBA(&sd_image[disk], lba))
-					{
-						if (FileReadSec(&sd_image[disk], buffer[disk]))
+					// if (disk==2 && (lba*512)<0x2000000 ) {	// MSU Data track reading...
+					// 	memcpy(buffer[2], msu_data_array+(lba*512), 512);
+					// 	done = 1;
+					// }
+					if (disk==2) {
+						buf.read(buffer[2], 512);
+						done = 1;
+					} 
+					else {
+						// Other track reading (usually MSU audio track streaming)...
+						if (FileSeekLBA(&sd_image[disk], lba))
 						{
-							done = 1;
+							if (FileReadSec(&sd_image[disk], buffer[disk]))
+							{
+								done = 1;
+							}
 						}
 					}
 				}
@@ -433,7 +518,8 @@ void snes_sd_handling(uint64_t *buffer_lba, fileTYPE *sd_image, int fio_size)
 				{
 					printf("SNES MSU - Track reaching end of file\n");
 				} 
-				else if (FileSeekLBA(&sd_image[disk], lba + 1))
+				
+				if (disk != 2 && FileSeekLBA(&sd_image[disk], lba + 1))
 				{					
 					if (FileReadSec(&sd_image[disk], buffer[disk]))
 					{
@@ -461,8 +547,6 @@ void snes_poll(void)
     char msu_trackout;
 	char msu_trackrequest;
 	
-    //msu_trackout = snes_read_msu_trackout();
-
 	// Tell FPGA to send me msu_trackout and msu_trackrequest
 	spi_uio_cmd_cont(0x50);
 	msu_trackout = spi_in();
@@ -470,10 +554,8 @@ void snes_poll(void)
 	// finish up
 	DisableIO();
 
-	// New Track?
-	// @todo need a better way to detect a track has been selected for playback... as this will not cope with being
-	// supplied the same track number... :(
-    if (msu_trackrequest == 1) 
+	// New MSU1 Track?
+	if (msu_trackrequest == 1) 
 	{
         printf("SNES MSU - New track selected: 0x%X\n", msu_trackout);
         snes_msu_currenttrack = msu_trackout;
@@ -492,7 +574,7 @@ void snes_poll(void)
 			spi_uio_cmd_cont(0x4f);
         	spi8(1);
         	DisableIO();
-			sprintf(msuErrorMessage, "MSU1 - Track not found: %d", msu_trackout);
+			sprintf(msuErrorMessage, "SNES MSU - Track not found: %d", msu_trackout);
 			Info(msuErrorMessage, 3000);
 			return;
 		}
