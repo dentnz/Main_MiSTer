@@ -363,8 +363,12 @@ void snes_sd_handling(uint64_t *buffer_lba, fileTYPE *sd_image, int fio_size)
 	}
 
 	char msu_data_seek;
+	char msu_data_seek_addr_high;
+	char msu_data_seek_addr_low;
 	spi_uio_cmd_cont(0x53);
 	msu_data_seek = spi_in();
+	msu_data_seek_addr_high = spi_in();
+	msu_data_seek_addr_low = spi_in();
 	DisableIO();
 
 	if (msu_data_seek)
