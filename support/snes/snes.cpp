@@ -363,12 +363,11 @@ void snes_sd_handling(uint64_t *buffer_lba, fileTYPE *sd_image, int fio_size)
 	}
 
 	char msu_data_seek;
-	char msu_data_seek_addr_high;
-	char msu_data_seek_addr_low;
+	uint32_t msu_data_seek_addr;
 	spi_uio_cmd_cont(0x53);
 	msu_data_seek = spi_in();
-	msu_data_seek_addr_high = spi_in();
-	msu_data_seek_addr_low = spi_in();
+	msu_data_seek_addr = spi_in();
+	msu_data_seek_addr<<16 = spi_in();
 	DisableIO();
 
 	if (msu_data_seek)
@@ -382,7 +381,7 @@ void snes_sd_handling(uint64_t *buffer_lba, fileTYPE *sd_image, int fio_size)
 			buf.clear();
 			printf("SNES MSU - Loading 8mb of MSU datafile into a temp array...\n");
 			msu_data_loaded = 0;
-			FileSeekLBA(&sd_image[2], 0);
+			FileSeek(&sd_image[2], msu_data_seek_addr, SEEK_SET);
 			FileReadAdv(&sd_image[2], msu_data_array, 0x800000);
 			printf("SNES MSU - Putting 8mb of that temp array into the ringbuffer\n");
 			buf.write(msu_data_array, 1048576 * 8);
