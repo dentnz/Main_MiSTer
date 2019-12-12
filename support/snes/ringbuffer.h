@@ -127,7 +127,10 @@ public:
     }
 
     void clear() {
-        memset(buffer, 0, sizeof(T) * size);
+        begin = 0;
+        end = 0;
+        size = size;
+        wrap = false;
     }
 private:
     T * buffer;

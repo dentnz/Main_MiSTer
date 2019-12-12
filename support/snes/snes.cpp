@@ -269,7 +269,7 @@ uint8_t* snes_get_header(fileTYPE *f)
 char snes_romFileName[1024] = { 0 };
 
 //uint8_t msu_data_array[0x2000000];
-uint8_t msu_data_loaded = 0;
+uint8_t msu_data_loaded = 0x00;
 
 void snes_msu_init(const char* name)
 {
@@ -289,7 +289,7 @@ void snes_msu_init(const char* name)
 		return;
 	}
 	else user_io_file_mount(msuFileName, 2);
-	msu_data_loaded = 1;
+	msu_data_loaded = 0x01;
 }
 
 // Tell the FPGA that the dataseek is finished on the HPS side
@@ -355,7 +355,7 @@ void snes_sd_handling(uint64_t *buffer_lba, fileTYPE *sd_image, int fio_size)
 	__off64_t size = sd_image[1].size>>9;
 	
 	// TODO put this out to a separate topup function
-	if (topup_buffer == 1 && buf.getFree() <= (uint32_t)1048576 * 2 && buf.getFree() >= (uint32_t)1048576 && sd_image[2].size) {
+	if (topup_buffer == 0x01 && buf.getFree() <= (uint32_t)1048576 * 2 && buf.getFree() >= (uint32_t)1048576 && sd_image[2].size) {
 		printf("SNES MSU - Topping up the ringbuffer...\n");
 		uint8_t tempBuffer[0x100000];
 		FileReadAdv(&sd_image[2], tempBuffer, 0x100000);
@@ -375,22 +375,25 @@ void snes_sd_handling(uint64_t *buffer_lba, fileTYPE *sd_image, int fio_size)
 	{
 		// TODO put this out to a separate seek function
 		//snes_msu_do_dataseek();
-		printf("SNES MSU - Seeking\n");
+		//printf("SNES MSU - Seeking - msu_data_loaded: 0x%X\n", msu_data_loaded);
 		uint32_t offset = msu_data_seek_addr_high << 16 | msu_data_seek_addr_low;
 		
-		if (msu_data_loaded == 1) {
-			memset(msu_data_array, 0, 1048576 * 8);
+		//if (msu_data_loaded == 0x01) {
+			//memset(msu_data_array, 0, 1048576 * 8);
 			buf.clear();
 			printf("SNES MSU - Loading 8mb of MSU datafile into a temp array...\n");
-			msu_data_loaded = 0;
+			msu_data_loaded = 0x00;
+			printf("SNES MSU - Seeking to address: %lu\n", (unsigned long)offset);
+			printf("SNES MSU - address high: %hx\n", msu_data_seek_addr_high);
+			printf("SNES MSU - address low: %hx\n", msu_data_seek_addr_low);
 			FileSeek(&sd_image[2], offset, SEEK_SET);
 			FileReadAdv(&sd_image[2], msu_data_array, 0x800000);
 			printf("SNES MSU - Putting 8mb of that temp array into the ringbuffer\n");
 			buf.write(msu_data_array, 1048576 * 8);
-			topup_buffer = 1;
+			topup_buffer = 0x01;
 
 			snes_write_dataseek_finished();
-		}
+		//}
 	}
 
 	// valid sd commands start with "5x" to avoid problems with
