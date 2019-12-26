@@ -350,6 +350,8 @@ uint8_t topup_buffer = 0;
 void snes_sd_handling(uint64_t *buffer_lba, fileTYPE *sd_image, int fio_size)
 {
 	static uint8_t buffer[4][512];
+	static uint8_t buffer_big[4096];
+
 	uint32_t lba;
 	uint16_t c = user_io_sd_get_status(&lba, 0);
 	__off64_t size = sd_image[1].size>>9;
@@ -487,7 +489,8 @@ void snes_sd_handling(uint64_t *buffer_lba, fileTYPE *sd_image, int fio_size)
 					// 	done = 1;
 					// }
 					if (disk==2) {
-						buf.read(buffer[2], 512);
+						// Read
+						buf.read(buffer_big, 4096);
 						done = 1;
 					} 
 					else {
@@ -512,7 +515,12 @@ void snes_sd_handling(uint64_t *buffer_lba, fileTYPE *sd_image, int fio_size)
 			{
 				// data is now stored in buffer. send it to fpga
 				spi_uio_cmd_cont(UIO_SECTOR_RD);
-				spi_block_write(buffer[disk], fio_size);
+				if (disk == 2) {
+					// Send a big sector for MSU data file
+					spi_write(buffer_big, 4096, 1);
+				} else {
+					spi_block_write(buffer[disk], fio_size);
+				}
 				DisableIO();
 			}
 
