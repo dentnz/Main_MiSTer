@@ -453,6 +453,10 @@ int hasAPI1_5()
 static uint32_t show_video_info(int force)
 {
 	uint32_t ret = 0;
+
+	// dentnz trying this
+	return ret;
+
 	static uint16_t nres = 0;
 	spi_uio_cmd_cont(UIO_GET_VRES);
 	uint16_t res = spi_w(0);

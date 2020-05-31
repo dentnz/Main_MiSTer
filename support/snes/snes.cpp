@@ -267,6 +267,7 @@ uint8_t* snes_get_header(fileTYPE *f)
 
 // This gets set by snes_msu_init for use by MSU-1 support later
 char snes_romFileName[1024] = { 0 };
+uint8_t topup_buffer = 0;
 
 //uint8_t msu_data_array[0x2000000];
 uint8_t msu_data_loaded = 0x00;
@@ -290,6 +291,7 @@ void snes_msu_init(const char* name)
 	}
 	else user_io_file_mount(msuFileName, 2);
 	msu_data_loaded = 0x01;
+	topup_buffer = 0;
 }
 
 // Tell the FPGA that the dataseek is finished on the HPS side
@@ -324,7 +326,6 @@ char snes_msu_read_dataseek(void)
 
 ringbuffer<uint8_t> buf(1048576 * 8);
 uint8_t msu_data_array[0x800000];
-uint8_t topup_buffer = 0;
 
 // void snes_msu_do_dataseek()
 // {
@@ -350,7 +351,7 @@ uint8_t topup_buffer = 0;
 void snes_sd_handling(uint64_t *buffer_lba, fileTYPE *sd_image, int fio_size)
 {
 	static uint8_t buffer[4][512];
-	static uint8_t buffer_big[4096];
+	static uint8_t buffer_big[2048];
 
 	uint32_t lba;
 	uint16_t c = user_io_sd_get_status(&lba, 0);
@@ -378,17 +379,19 @@ void snes_sd_handling(uint64_t *buffer_lba, fileTYPE *sd_image, int fio_size)
 		// TODO put this out to a separate seek function
 		//snes_msu_do_dataseek();
 		//printf("SNES MSU - Seeking - msu_data_loaded: 0x%X\n", msu_data_loaded);
-		uint32_t offset = msu_data_seek_addr_high << 16 | msu_data_seek_addr_low;
+		uint32_t offset64_low = msu_data_seek_addr_high << 16 | msu_data_seek_addr_low;
+		uint32_t offset64_high = 0x00000000;
+		uint64_t offset64 = (((uint64_t) offset64_high) << 32) | ((uint64_t) offset64_low);
 		
 		//if (msu_data_loaded == 0x01) {
 			//memset(msu_data_array, 0, 1048576 * 8);
 			buf.clear();
 			printf("SNES MSU - Loading 8mb of MSU datafile into a temp array...\n");
 			msu_data_loaded = 0x00;
-			printf("SNES MSU - Seeking to address: %lu\n", (unsigned long)offset);
+			printf("SNES MSU - Seeking to address: %llx\n", (unsigned long long)offset64);
 			printf("SNES MSU - address high: %hx\n", msu_data_seek_addr_high);
 			printf("SNES MSU - address low: %hx\n", msu_data_seek_addr_low);
-			FileSeek(&sd_image[2], offset, SEEK_SET);
+			FileSeek(&sd_image[2], offset64, SEEK_SET);
 			FileReadAdv(&sd_image[2], msu_data_array, 0x800000);
 			printf("SNES MSU - Putting 8mb of that temp array into the ringbuffer\n");
 			buf.write(msu_data_array, 1048576 * 8);
