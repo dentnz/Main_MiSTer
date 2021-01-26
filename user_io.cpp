@@ -2293,8 +2293,9 @@ char *user_io_get_confstr(int index)
 		lidx++;
 	}
 
-	DisableIO();
-	//  printf("\n");
+	char *end = strchr(start, ';');
+	int len = end ? end - start : strlen(start);
+	if (!len) return NULL;
 
 	if ((uint32_t)len > sizeof(buffer) - 1) len = sizeof(buffer) - 1;
 	memcpy(buffer, start, len);
@@ -2596,9 +2597,11 @@ void user_io_poll()
 	{
 		if (is_st()) tos_poll();
 
-		if (!is_snes_core())
-		{
-		    static uint8_t buffer[4][8192];
+        if (is_snes())
+            // Snes SD is handled in the support/snes code
+		    snes_sd_handling(buffer_lba, sd_image, fio_size);
+		} else {
+            static uint8_t buffer[4][8192];
             uint32_t lba;
             uint16_t req_type = 0;
             uint16_t c = user_io_sd_get_status(&lba, &req_type);
@@ -2751,10 +2754,6 @@ void user_io_poll()
 				}
 			}
 		}
-		else
-		{
-			snes_sd_handling(buffer_lba, sd_image, fio_size);
-		}
 	}
 
 	if (core_type == CORE_TYPE_8BIT && !is_minimig() && !is_archie())
@@ -2847,7 +2846,7 @@ void user_io_poll()
 
 	if (core_type == CORE_TYPE_ARCHIE || is_archie()) archie_poll();
 	if (core_type == CORE_TYPE_SHARPMZ) sharpmz_poll();
-	if (is_snes_core()) snes_poll();
+	if (is_snes()) snes_poll();
 
 	static uint8_t leds = 0;
 	if(use_ps2ctl && !is_minimig() && !is_archie())
