@@ -2252,6 +2252,13 @@ int user_io_file_tx(const char* name, unsigned char index, char opensave, char m
 	}
 
 	MenuHide();
+
+	if (is_snes())
+	{
+		// Setup MSU
+		snes_msu_init(name);
+	}
+
 	return 1;
 }
 
@@ -2286,9 +2293,8 @@ char *user_io_get_confstr(int index)
 		lidx++;
 	}
 
-	char *end = strchr(start, ';');
-	int len = end ? end - start : strlen(start);
-	if (!len) return NULL;
+	DisableIO();
+	//  printf("\n");
 
 	if ((uint32_t)len > sizeof(buffer) - 1) len = sizeof(buffer) - 1;
 	memcpy(buffer, start, len);
@@ -2590,35 +2596,37 @@ void user_io_poll()
 	{
 		if (is_st()) tos_poll();
 
-		static uint8_t buffer[4][8192];
-		uint32_t lba;
-		uint16_t req_type = 0;
-		uint16_t c = user_io_sd_get_status(&lba, &req_type);
-		//if(c&3) printf("user_io_sd_get_status: cmd=%02x, lba=%08x\n", c, lba);
-
-		// valid sd commands start with "5x" to avoid problems with
-		// cores that don't implement this command
-		if ((c & 0xf0) == 0x50)
+		if (!is_snes_core())
 		{
-			// check if core requests configuration
-			if (c & 0x08)
-			{
-				printf("core requests SD config\n");
-				user_io_sd_set_config();
-			}
+		    static uint8_t buffer[4][8192];
+            uint32_t lba;
+            uint16_t req_type = 0;
+            uint16_t c = user_io_sd_get_status(&lba, &req_type);
+            //if(c&3) printf("user_io_sd_get_status: cmd=%02x, lba=%08x\n", c, lba);
 
-			if(c & 0x3802)
+			// valid sd commands start with "5x" to avoid problems with
+			// cores that don't implement this command
+			if ((c & 0xf0) == 0x50)
 			{
-				int disk = 3;
-				if (c & 0x0002) disk = 0;
-				else if (c & 0x0800) disk = 1;
-				else if (c & 0x1000) disk = 2;
-
-				// only write if the inserted card is not sdhc or
-				// if the core uses sdhc
-				if(c & 0x04)
+				// check if core requests configuration
+				if (c & 0x08)
 				{
-					//printf("SD WR %d on %d\n", lba, disk);
+					printf("core requests SD config\n");
+					user_io_sd_set_config();
+				}
+
+				if(c & 0x3802)
+				{
+					int disk = 3;
+					if (c & 0x0002) disk = 0;
+					else if (c & 0x0800) disk = 1;
+					else if (c & 0x1000) disk = 2;
+
+					// only write if the inserted card is not sdhc or
+					// if the core uses sdhc
+					if(c & 0x04)
+					{
+						//printf("SD WR %d on %d\n", lba, disk);
 
 					if (use_save) menu_process_save();
 
@@ -2743,6 +2751,10 @@ void user_io_poll()
 				}
 			}
 		}
+		else
+		{
+			snes_sd_handling(buffer_lba, sd_image, fio_size);
+		}
 	}
 
 	if (core_type == CORE_TYPE_8BIT && !is_minimig() && !is_archie())
@@ -2835,6 +2847,7 @@ void user_io_poll()
 
 	if (core_type == CORE_TYPE_ARCHIE || is_archie()) archie_poll();
 	if (core_type == CORE_TYPE_SHARPMZ) sharpmz_poll();
+	if (is_snes_core()) snes_poll();
 
 	static uint8_t leds = 0;
 	if(use_ps2ctl && !is_minimig() && !is_archie())

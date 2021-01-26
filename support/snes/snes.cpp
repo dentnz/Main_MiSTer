@@ -3,10 +3,15 @@
 #include <stdlib.h>
 #include <string.h>
 #include <inttypes.h>
+#include <limits.h>
 
 #include "../../file_io.h"
+#include "../../user_io.h"
+#include "../../menu.h"
+#include "ringbuffer.h"
 
 static uint8_t hdr[512];
+char snes_msu_currenttrack(0x00);
 
 enum HeaderField {
 	CartName = 0x00,
@@ -167,16 +172,16 @@ uint8_t* snes_get_header(fileTYPE *f)
 				}
 
 				bool has_bsx_slot = false;
-				if (buf[addr - 14] == 'Z' && buf[addr - 11] == 'J' && 
+				if (buf[addr - 14] == 'Z' && buf[addr - 11] == 'J' &&
 					((buf[addr - 13] >= 'A' && buf[addr - 13] <= 'Z') || (buf[addr - 13] >= '0' && buf[addr - 13] <= '9')) &&
 					(buf[addr + Company] == 0x33 || (buf[addr - 10] == 0x00 && buf[addr - 4] == 0x00)) ) {
 					has_bsx_slot = true;
 				}
 
 				//Rom type: 0-Low, 1-High, 2-ExHigh, 3-SpecialLoRom
-				hdr[1] = (addr == 0x00ffc0) ? 1 : 
-						 (addr == 0x40ffc0) ? 2 : 
-						 has_bsx_slot ? 3 : 
+				hdr[1] = (addr == 0x00ffc0) ? 1 :
+						 (addr == 0x40ffc0) ? 2 :
+						 has_bsx_slot ? 3 :
 						 0;
 
 				//BSX 3
@@ -309,4 +314,339 @@ void snes_patch_bs_header(fileTYPE *f, uint8_t *buf)
 			buf[0xFDA] = 0x33;
 		}
 	}
+}
+// This gets set by snes_msu_init for use by MSU-1 support later
+char snes_romFileName[1024] = { 0 };
+
+//uint8_t msu_data_array[0x2000000];
+uint8_t msu_data_loaded = 0x00;
+
+void snes_msu_init(const char* name)
+{
+	fileTYPE f = {};
+	static char msuFileName[1024] = { 0 };
+	// Clear our our rom file name
+	memset(snes_romFileName, 0, 1024);
+	strncpy(snes_romFileName, name, strlen(name) - 4);
+
+	printf("SNES MSU - Rom named '%s' initialised\n", name);
+	snes_msu_currenttrack = 0x00;
+
+	sprintf(msuFileName, "%s.msu", snes_romFileName);
+	printf("SNES MSU - Checking for MSU datafile: %s\n", msuFileName);
+	if (!FileOpen(&f, msuFileName)) {
+		printf("SNES MSU - MSU datafile not found");
+		return;
+	}
+	else user_io_file_mount(msuFileName, 2);
+	msu_data_loaded = 0x01;
+}
+
+// Tell the FPGA that the dataseek is finished on the HPS side
+void snes_write_dataseek_finished(void)
+{
+	spi_uio_cmd_cont(0x54);
+	spi8(1);
+	DisableIO();
+	printf("SNES MSU - MSU dataseek finished\n");
+}
+
+// Get the FPGA's msu_trackout number
+char snes_read_msu_trackout(void)
+{
+	char msu_trackout;
+	spi_uio_cmd_cont(0x50);
+	msu_trackout = spi_in();
+	DisableIO();
+
+	return(msu_trackout);
+}
+
+char snes_msu_read_dataseek(void)
+{
+	char msu_data_seek;
+	spi_uio_cmd_cont(0x53);
+	msu_data_seek = spi_in();
+	DisableIO();
+
+	return(msu_data_seek);
+}
+
+ringbuffer<uint8_t> buf(1048576 * 8);
+uint8_t msu_data_array[0x800000];
+uint8_t topup_buffer = 0;
+
+// void snes_msu_do_dataseek()
+// {
+// 	printf("SNES MSU - Seeking");
+
+// 	if (msu_data_loaded == 1) {
+// 		memset(msu_data_array, 0, 1048576 * 8);
+// 		buf.clear();
+// 		printf("SNES MSU - Loading 8mb of MSU datafile into a temp array...\n");
+// 		msu_data_loaded = 0;
+// 		FileSeekLBA(&sd_image[2], 0);
+// 		//FileReadAdv(&sd_image[2], msu_data_array, 0x2000000);
+// 		// load 2mb into ram, and then copy 1mb of that into the ring buffer
+// 		FileReadAdv(&sd_image[2], msu_data_array, 0x800000);
+// 		printf("SNES MSU - Putting 8mb of that temp array into the ringbuffer\n");
+// 		buf.write(msu_data_array, 1048576 * 8);
+// 		topup_buffer = 1;
+
+// 		snes_write_dataseek_finished();
+// 	}
+// }
+
+void snes_sd_handling(uint64_t *buffer_lba, fileTYPE *sd_image, int fio_size)
+{
+	static uint8_t buffer[4][512];
+	uint32_t lba;
+	uint16_t c = user_io_sd_get_status(&lba, 0);
+	__off64_t size = sd_image[1].size>>9;
+
+	// TODO put this out to a separate topup function
+	if (topup_buffer == 0x01 && buf.getFree() <= (uint32_t)1048576 * 2 && buf.getFree() >= (uint32_t)1048576 && sd_image[2].size) {
+		printf("SNES MSU - Topping up the ringbuffer...\n");
+		uint8_t tempBuffer[0x100000];
+		FileReadAdv(&sd_image[2], tempBuffer, 0x100000);
+		buf.write(tempBuffer, 1048576);
+	}
+
+	char msu_data_seek;
+	uint16_t msu_data_seek_addr_high;
+	uint16_t msu_data_seek_addr_low;
+	spi_uio_cmd_cont(0x53);
+	msu_data_seek = spi_in();
+	msu_data_seek_addr_low = spi_in();
+	msu_data_seek_addr_high = spi_in();
+	DisableIO();
+
+	if (msu_data_seek)
+	{
+		// TODO put this out to a separate seek function
+		//snes_msu_do_dataseek();
+		//printf("SNES MSU - Seeking - msu_data_loaded: 0x%X\n", msu_data_loaded);
+		uint32_t offset = msu_data_seek_addr_high << 16 | msu_data_seek_addr_low;
+
+		//if (msu_data_loaded == 0x01) {
+			//memset(msu_data_array, 0, 1048576 * 8);
+			buf.clear();
+			printf("SNES MSU - Loading 8mb of MSU datafile into a temp array...\n");
+			msu_data_loaded = 0x00;
+			printf("SNES MSU - Seeking to address: %lu\n", (unsigned long)offset);
+			printf("SNES MSU - address high: %hx\n", msu_data_seek_addr_high);
+			printf("SNES MSU - address low: %hx\n", msu_data_seek_addr_low);
+			FileSeek(&sd_image[2], offset, SEEK_SET);
+			FileReadAdv(&sd_image[2], msu_data_array, 0x800000);
+			printf("SNES MSU - Putting 8mb of that temp array into the ringbuffer\n");
+			buf.write(msu_data_array, 1048576 * 8);
+			topup_buffer = 0x01;
+
+			snes_write_dataseek_finished();
+		//}
+	}
+
+	// valid sd commands start with "5x" to avoid problems with
+	// cores that don't implement this command
+	if ((c & 0xf0) == 0x50)
+	{
+		// check if core requests configuration
+		if (c & 0x08)
+		{
+			printf("core requests SD config\n");
+			user_io_sd_set_config();
+		}
+
+		if(c & 0x3802)
+		{
+			int disk = 3;
+			if (c & 0x0002) disk = 0;
+			else if (c & 0x0800) disk = 1;
+			else if (c & 0x1000) disk = 2;
+
+			// only write if the inserted card is not sdhc or
+			// if the core uses sdhc
+			if(c & 0x04)
+			{
+				//printf("SD WR %d on %d\n", lba, disk);
+				int done = 0;
+				buffer_lba[disk] = lba;
+
+				// Fetch sector data from FPGA ...
+				spi_uio_cmd_cont(UIO_SECTOR_WR);
+				spi_block_read(buffer[disk], fio_size);
+				DisableIO();
+
+				if (sd_image[disk].type == 2 && !lba)
+				{
+					//Create the file
+					if (FileOpenEx(&sd_image[disk], sd_image[disk].path, O_CREAT | O_RDWR | O_SYNC))
+					{
+						diskled_on();
+						if (FileWriteSec(&sd_image[disk], buffer[disk]))
+						{
+							sd_image[disk].size = 512;
+							done = 1;
+						}
+					}
+					else
+					{
+						printf("Error in creating file: %s\n", sd_image[disk].path);
+					}
+				}
+				else
+				{
+					// ... and write it to disk
+					__off64_t size = sd_image[disk].size>>9;
+					if (size && size>=lba)
+					{
+						if (FileSeekLBA(&sd_image[disk], lba))
+						{
+							if (FileWriteSec(&sd_image[disk], buffer[disk]))
+							{
+								done = 1;
+								if (size == lba)
+								{
+									size++;
+									sd_image[disk].size = size << 9;
+								}
+							}
+						}
+					}
+				}
+
+				if (!done) buffer_lba[disk] = -1;
+			}
+		}
+		else if (c & 0x0701)
+		{
+			// Reads
+			int disk = 3;
+			if (c & 0x0001) disk = 0;
+			else if (c & 0x0100) disk = 1;
+			else if (c & 0x0200) disk = 2;
+
+			int done = 0;
+
+			if (buffer_lba[disk] != lba)
+			{
+				if (sd_image[disk].size)
+				{
+					// if (disk==2 && (lba*512)<0x2000000 ) {	// MSU Data track reading...
+					// 	memcpy(buffer[2], msu_data_array+(lba*512), 512);
+					// 	done = 1;
+					// }
+					if (disk==2) {
+						buf.read(buffer[2], 512);
+						done = 1;
+					}
+					else {
+						// Other track reading (usually MSU audio track streaming)...
+						if (FileSeekLBA(&sd_image[disk], lba))
+						{
+							if (FileReadSec(&sd_image[disk], buffer[disk]))
+							{
+								done = 1;
+							}
+						}
+					}
+				}
+
+				// Even after error we have to provide the block to the core
+				// Give an empty block.
+				if (!done) memset(buffer[disk], 0, sizeof(buffer[disk]));
+				buffer_lba[disk] = lba;
+			}
+
+			if(buffer_lba[disk] == lba)
+			{
+				// data is now stored in buffer. send it to fpga
+				spi_uio_cmd_cont(UIO_SECTOR_RD);
+				spi_block_write(buffer[disk], fio_size);
+				DisableIO();
+			}
+
+			// just load the next sector now, so it may be prefetched
+			// for the next request already
+			done = 0;
+			if (sd_image[disk].size)
+			{
+				diskled_on();
+				if (disk == 1 && lba + 1 == size - 2)
+				{
+					printf("SNES MSU - Track reaching end of file\n");
+				}
+
+				if (disk != 2 && FileSeekLBA(&sd_image[disk], lba + 1))
+				{
+					if (FileReadSec(&sd_image[disk], buffer[disk]))
+					{
+						done = 1;
+					}
+				}
+			}
+
+			if(done) buffer_lba[disk] = lba + 1;
+
+			if (sd_image[disk].type == 2)
+			{
+				buffer_lba[disk] = -1;
+			}
+		}
+	}
+}
+
+void snes_poll(void)
+{
+	fileTYPE f = {};
+    static char SelectedPath[1024] = { 0 };
+	static char msuErrorMessage[256] = { 0 };
+
+    char msu_trackout;
+	char msu_trackrequest;
+
+	// Tell FPGA to send me msu_trackout and msu_trackrequest
+	spi_uio_cmd_cont(0x50);
+	msu_trackout = spi_in();
+	msu_trackrequest = spi_in();
+	// finish up
+	DisableIO();
+
+	// New MSU1 Track?
+	if (msu_trackrequest == 1)
+	{
+        printf("SNES MSU - New track selected: 0x%X\n", msu_trackout);
+        snes_msu_currenttrack = msu_trackout;
+
+        sprintf(SelectedPath, "%s-%d.pcm", snes_romFileName, msu_trackout);
+        printf("SNES MSU - Full MSU track path is: %s\n", SelectedPath);
+
+		if (strlen(snes_romFileName) == 0) {
+			sprintf(msuErrorMessage, "MSU1 - No romname\nReload the rom or core");
+			Info(msuErrorMessage, 5000);
+			return;
+		}
+
+		if (!FileOpen(&f, SelectedPath)) {
+			// Tell FPGA we couldn't mount the file correctly (trackmissing status will go high, audio busy will go low)
+			spi_uio_cmd_cont(0x4f);
+        	spi8(1);
+        	DisableIO();
+			sprintf(msuErrorMessage, "SNES MSU - Track not found: %d", msu_trackout);
+			Info(msuErrorMessage, 3000);
+			return;
+		}
+
+		// Track wasn't missing! Let's make it available to the FPGA
+        // Tell FPGA we are mounting the file
+        spi_uio_cmd_cont(0x52);
+        spi8(1);
+        DisableIO();
+
+        user_io_file_mount(SelectedPath, 1);
+		// Tell FPGA we have finished mounting the file, trackmissing will go low also
+        spi_uio_cmd_cont(0x51);
+        spi8(1);
+        DisableIO();
+    }
 }

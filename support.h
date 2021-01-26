@@ -19,6 +19,7 @@
 
 // SNES  support
 #include "support/snes/snes.h"
+#include "support/snes/ringbuffer.h"
 
 // NeoGeo  support
 #include "support/neogeo/neogeo_loader.h"
