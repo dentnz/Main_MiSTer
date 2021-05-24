@@ -3,10 +3,15 @@
 #include <stdlib.h>
 #include <string.h>
 #include <inttypes.h>
+#include <limits.h>
 
 #include "../../file_io.h"
+#include "../../user_io.h"
+#include "../../spi.h"
 
 static uint8_t hdr[512];
+char snes_msu_currenttrack(0x00);
+
 
 enum HeaderField {
 	CartName = 0x00,
@@ -285,6 +290,175 @@ uint8_t* snes_get_header(fileTYPE *f)
 	}
 	return hdr;
 }
+
+// This gets set by snes_msu_init for use by MSU-1 support later
+char snes_romFileName[1024] = { 0 };
+uint8_t topup_buffer = 0;
+
+//uint8_t msu_data_array[0x2000000];
+uint8_t msu_data_loaded = 0x00;
+
+void snes_msu_init(const char* name)
+{
+	fileTYPE f = {};
+	static char msuFileName[1024] = { 0 };
+	// Clear our our rom file name
+	memset(snes_romFileName, 0, 1024);
+	strncpy(snes_romFileName, name, strlen(name) - 4);
+
+	printf("SNES MSU - Rom named '%s' initialised\n", name);
+	snes_msu_currenttrack = 0x00;
+
+//	sprintf(msuFileName, "%s.msu", snes_romFileName);
+//	printf("SNES MSU - Checking for MSU datafile: %s\n", msuFileName);
+//	if (!FileOpen(&f, msuFileName)) {
+//		printf("SNES MSU - MSU datafile not found");
+//		return;
+//	}
+	//else user_io_file_mount(msuFileName, 2);
+	msu_data_loaded = 0x01;
+	topup_buffer = 0;
+}
+
+static int need_reset=0;
+static uint8_t has_command = 0;
+
+int snes_send_data(fileTYPE *f, uint8_t *buf) {
+	int chunk = 1024;
+    FileReadAdv(f, buf, chunk);
+	// set index byte
+	user_io_set_index(211);
+	user_io_set_download(1);
+	printf("chunk");
+	user_io_file_tx_data(buf, chunk);
+	user_io_set_download(0);
+	return 1;
+}
+
+void snes_poll(void)
+{
+	static fileTYPE f = {};
+    static char SelectedPath[1024] = { 0 };
+	static char msuErrorMessage[256] = { 0 };
+	static uint8_t last_req = 255;
+	static uint64_t c = 0x000000000000;
+	static uint16_t command = 0X0000;
+	static uint8_t buf[1024];
+
+    static uint8_t msu_trackout = 0;
+	static uint8_t msu_trackrequest = 0;
+	static uint8_t msu_trackmounted = 0;
+
+	if (has_command) {
+        spi_uio_cmd_cont(UIO_CD_SET);
+        uint64_t data = 0x000000000001;
+        spi_w((data >> 0) & 0xFFFF);
+        spi_w((data >> 16) & 0xFFFF);
+        // We should always be sending data
+        //spi_w(((s >> 32) & 0x00FF) | (cdd.isData ? 0x01 << 8 : 0x00 << 8));
+        spi_w(((data >> 32) & 0x00FF) | 0x01 << 8);
+        DisableIO();
+
+        // What was the command
+        if (command == 0x0035) {
+            // track requested
+            msu_trackrequest = 1;
+        }
+
+        has_command = 0;
+        printf("\x1b[32mSNES: Send EXT, data = %04X%04X%04X\n\x1b[0m", (uint16_t)((data >> 32) & 0x00FF), (uint16_t)((data >> 16) & 0xFFFF), (uint16_t)((data >> 0) & 0xFFFF));
+    }
+
+    // Detect CD_GET (which we are repurposing for MSU1)
+    uint8_t req = spi_uio_cmd_cont(UIO_CD_GET);
+    if (req != last_req)
+    {
+        last_req = req;
+
+        uint16_t data_in[4];
+        data_in[0] = spi_w(0);
+        data_in[1] = spi_w(0);
+        data_in[2] = spi_w(0);
+        DisableIO();
+
+        if (need_reset || data_in[0] == 0xFF) {
+            printf("SNES: request to reset\n");
+            need_reset = 0;
+            //cdd.Reset();
+        }
+
+        c = *((uint64_t*)(data_in));
+        has_command = 1;
+        command = data_in[0];
+
+        printf("\x1b[32mSNES: Get command, full command = %04X%04X%04X, has_command = %u\n\x1b[0m", data_in[2], data_in[1], data_in[0], has_command);
+    }
+    else
+        DisableIO();
+
+
+	// New MSU1 Track?
+	if (msu_trackrequest == 1 && msu_trackmounted == 0)
+	{
+        printf("SNES MSU - New track selected: 0x%X\n", 0x01);
+        //snes_msu_currenttrack = msu_trackout;
+
+        sprintf(SelectedPath, "%s-%d.pcm", snes_romFileName, 1);
+        printf("SNES MSU - Full MSU track path is: %s\n", SelectedPath);
+
+		if (strlen(snes_romFileName) == 0)
+		{
+			printf(msuErrorMessage, "MSU1 - No romname\nReload the rom or core");
+		}
+		else
+		{
+            if (!FileOpen(&f, SelectedPath))
+            {
+                // Tell FPGA we couldn't mount the file correctly (trackmissing status will go high, audio busy will go low)
+                //spi_uio_cmd_cont(0x4f);
+                //spi8(1);
+                //DisableIO();
+                sprintf(msuErrorMessage, "SNES MSU - Track not found: %d", 1);
+                printf(msuErrorMessage, 3000);
+            }
+        }
+		// Track wasn't missing! Let's make it available to the FPGA
+        // Tell FPGA we are mounting the file
+
+        user_io_file_mount(SelectedPath, 211);
+        FileSeek(&f, 0, SEEK_SET);
+        msu_trackrequest = 0;
+        msu_trackmounted = 1;
+        printf("Lets do this!\n");
+    }
+
+    if (msu_trackmounted == 1 && msu_trackrequest == 0)
+    {
+        // keep sending chunks
+        snes_send_data(&f, buf);
+    }
+}
+
+/*
+void SectorSend()
+{
+	uint8_t buf[2352 + 2352];
+	int len = 2352;
+
+	if (header) {
+		memcpy(buf + 12, header, 4);
+		ReadData(buf + 16);
+	}
+	else {
+		len = ReadCDDA(buf);
+	}
+
+	if (SendData)
+		return SendData(buf, len, CD_DATA_IO_INDEX);
+
+	return 0;
+}
+*/
 
 void snes_patch_bs_header(fileTYPE *f, uint8_t *buf)
 {
