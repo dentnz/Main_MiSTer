@@ -327,9 +327,8 @@ int snes_send_data(fileTYPE *f, uint8_t *buf) {
 	int chunk = 1024;
     FileReadAdv(f, buf, chunk);
 	// set index byte
-	user_io_set_index(211);
+	user_io_set_index(2);
 	user_io_set_download(1);
-	printf("chunk");
 	user_io_file_tx_data(buf, chunk);
 	user_io_set_download(0);
 	return 1;
@@ -348,25 +347,23 @@ void snes_poll(void)
     static uint8_t msu_trackout = 0;
 	static uint8_t msu_trackrequest = 0;
 	static uint8_t msu_trackmounted = 0;
+	static uint8_t send_sector = 0;
+	static uint8_t data_req = 0;
 
 	if (has_command) {
-        spi_uio_cmd_cont(UIO_CD_SET);
-        uint64_t data = 0x000000000001;
-        spi_w((data >> 0) & 0xFFFF);
-        spi_w((data >> 16) & 0xFFFF);
-        // We should always be sending data
-        //spi_w(((s >> 32) & 0x00FF) | (cdd.isData ? 0x01 << 8 : 0x00 << 8));
-        spi_w(((data >> 32) & 0x00FF) | 0x01 << 8);
-        DisableIO();
-
         // What was the command
         if (command == 0x0035) {
             // track requested
             msu_trackrequest = 1;
+            printf("\x1b[32mSNES: Track requested\n\x1b[0m");
+        }
+
+        if (command == 0x0034) {
+            // sector requested
+            send_sector = 1;
         }
 
         has_command = 0;
-        printf("\x1b[32mSNES: Send EXT, data = %04X%04X%04X\n\x1b[0m", (uint16_t)((data >> 32) & 0x00FF), (uint16_t)((data >> 16) & 0xFFFF), (uint16_t)((data >> 0) & 0xFFFF));
     }
 
     // Detect CD_GET (which we are repurposing for MSU1)
@@ -383,6 +380,8 @@ void snes_poll(void)
 
         if (need_reset || data_in[0] == 0xFF) {
             printf("SNES: request to reset\n");
+            need_reset = 1;
+            // TODO need to reset everything at this point
             need_reset = 0;
             //cdd.Reset();
         }
@@ -395,7 +394,6 @@ void snes_poll(void)
     }
     else
         DisableIO();
-
 
 	// New MSU1 Track?
 	if (msu_trackrequest == 1 && msu_trackmounted == 0)
@@ -425,17 +423,38 @@ void snes_poll(void)
 		// Track wasn't missing! Let's make it available to the FPGA
         // Tell FPGA we are mounting the file
 
-        user_io_file_mount(SelectedPath, 211);
+        user_io_file_mount(SelectedPath, 2);
         FileSeek(&f, 0, SEEK_SET);
         msu_trackrequest = 0;
         msu_trackmounted = 1;
         printf("Lets do this!\n");
     }
 
-    if (msu_trackmounted == 1 && msu_trackrequest == 0)
+    if (msu_trackmounted == 1 && msu_trackrequest == 0 && send_sector == 1)
     {
-        // keep sending chunks
+        // A sector has been requested, send a sector
         snes_send_data(&f, buf);
+        // Send sector_done message
+        spi_uio_cmd_cont(UIO_CD_SET);
+        uint64_t data = 0x00000000101;
+        spi_w((data >> 0) & 0xFFFF);
+        spi_w((data >> 16) & 0xFFFF);
+        spi_w(((data >> 32) & 0x00FF) | data_req ? 0x00 << 8 : 0x01 << 8);
+        DisableIO();
+        printf(".");
+        send_sector = 0;
+        data_req = !data_req;
+    }
+    else if (msu_trackmounted == 1 && msu_trackrequest == 0)
+    {
+        // Tell the core that the track has been mounted
+        spi_uio_cmd_cont(UIO_CD_SET);
+        uint64_t data = 0x00000000201;
+        spi_w((data >> 0) & 0xFFFF);
+        spi_w((data >> 16) & 0xFFFF);
+        spi_w(((data >> 32) & 0x00FF) | 0x00 << 8);
+        DisableIO();
+        send_sector = 0;
     }
 }
 
