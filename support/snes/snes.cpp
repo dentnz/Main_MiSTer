@@ -407,13 +407,11 @@ void snes_poll(void)
 	static uint16_t command = 0X0000;
 	static uint16_t command_payload_lower = 0X0000;
 	static uint16_t command_payload_middle = 0X0000;
-	//static uint16_t command_payload_upper = 0X0000;
 	static uint8_t buf[1024];
 
 	static uint16_t msu_trackout = 0;
 	static uint8_t msu_trackrequest = 0;
 	static uint8_t msu_trackmounted = 0;
-	//static uint8_t msu_trackmissing = 0;
 	static uint8_t msu_sector_jumping = 0;
 	static uint8_t msu_sector_requested = 0;
 	static uint8_t send_sector = 0;
@@ -469,19 +467,13 @@ void snes_poll(void)
 		if (need_reset || data_in[0] == 0xFF)
 		{
 			printf("SNES: request to reset\n");
-			need_reset = 1;
-			// TODO need to reset everything at this point
-			need_reset = 0;
-			//cdd.Reset();
+			// TODO need to reset everything at this point - this will be useful for datafile
 		}
 
 		has_command = 1;
 		command = data_in[0];
 		command_payload_lower = data_in[1];
 		command_payload_middle = data_in[2];
-		//command_payload_upper = data_in[3];
-
-		//printf("\x1b[32mSNES MSU: Get command, full command = %04X%04X%04X, has_command = %u\n\x1b[0m", data_in[2], data_in[1], data_in[0], has_command);
 	}
 	else
 	{
@@ -509,7 +501,7 @@ void snes_poll(void)
 			if (!FileOpen(&f, SelectedPath))
 			{
 				msu_send_command(MSU_AUDIO_TRACKMISSING);
-				sprintf(msuErrorMessage, "SNES MSU - Track not found: %d\n", 1);
+				sprintf(msuErrorMessage, "SNES MSU - Track not found: %d\n", msu_trackout);
 				printf(msuErrorMessage, 3000);
 				msu_trackrequest = 0;
 				msu_trackmounted = 0;
@@ -523,7 +515,6 @@ void snes_poll(void)
 				msu_trackrequest = 0;
 				// Note that track request will be set to 0 AFTER the track mounted message is sent to FPGA
 				printf("SNES MSU - Track mounted\n");
-				//msu_trackmissing = 0;
 			}
 		}
 	}
@@ -547,7 +538,6 @@ void snes_poll(void)
 		// Tell the core that the track has been mounted
 		msu_trackrequest = 0;
 		printf("SNES MSU: sending track mounted - 201\n");
-		// @todo We may need to buffer on the linux side at this point
 		msu_send_command(MSU_AUDIO_TRACKMOUNTED);
 		send_sector = 0;
 	}
