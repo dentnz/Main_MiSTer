@@ -512,7 +512,6 @@ void snes_poll(void)
 				user_io_file_mount(SelectedPath, 2);
 				FileSeek(&f, 0, SEEK_SET);
 				msu_trackmounted = 1;
-				msu_trackrequest = 0;
 				// Note that track request will be set to 0 AFTER the track mounted message is sent to FPGA
 				printf("SNES MSU - Track mounted\n");
 			}
